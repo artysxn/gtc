@@ -18,7 +18,7 @@ app.use((req, res, next) => {
         "default-src 'self'; " +
         "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; " +
         "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; " +
-        "img-src 'self' data: blob: https://*.openstreetmap.org https://images.unsplash.com https://unpkg.com; " + // Added https://unpkg.com here
+        "img-src 'self' data: blob: https://*.openstreetmap.org https://*.cartocdn.com https://images.unsplash.com https://unpkg.com; " + // Added cartocdn
         "font-src 'self' https://fonts.gstatic.com; " +
         "connect-src 'self' https://nominatim.openstreetmap.org https://overpass-api.de https://restcountries.com;"
     );
@@ -102,7 +102,9 @@ const INITIAL_GAME_STATE = {
 const DEFAULT_SETTINGS = {
     minPop: 5000,
     hintThresholds: [30, 60, 90], // Guesses needed for hints
-    password: null
+    password: null,
+    gameMode: 'ffa', // 'ffa' or 'turn_based'
+    moveTimeLimit: 0 // Seconds, 0 = off
 };
 
 // --- Helper Functions ---
@@ -143,11 +145,37 @@ function broadcastState(lobbyId) {
             players: lobby.players,
             myRole: isSetter ? 'setter' : 'guesser',
             settings: lobby.settings,
-            isHost: player.id === lobby.hostId
+            isHost: player.id === lobby.hostId,
+            turnState: lobby.turnState,
+            timeLeft: lobby.turnState.deadline ? Math.max(0, Math.ceil((lobby.turnState.deadline - Date.now()) / 1000)) : null
         };
 
         socket.emit('game_state_update', sanitizedState);
     });
+}
+
+function advanceTurn(lobby) {
+    if (lobby.settings.gameMode !== 'turn_based') return;
+
+    const guessers = lobby.players.filter(p => p.role === 'guesser');
+    if (guessers.length === 0) {
+        lobby.turnState = { currentGuesserId: null, deadline: null };
+        return;
+    }
+
+    let currentIndex = guessers.findIndex(p => p.id === lobby.turnState.currentGuesserId);
+    let nextIndex = (currentIndex + 1) % guessers.length;
+    
+    // If current is invalid (e.g. left), start from 0
+    if (currentIndex === -1) nextIndex = 0;
+
+    lobby.turnState.currentGuesserId = guessers[nextIndex].id;
+    
+    if (lobby.settings.moveTimeLimit > 0) {
+        lobby.turnState.deadline = Date.now() + (lobby.settings.moveTimeLimit * 1000);
+    } else {
+        lobby.turnState.deadline = null;
+    }
 }
 
 function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
@@ -209,10 +237,16 @@ app.post('/upload', upload.single('image'), (req, res) => {
 
     lobby.gameState.image = '/uploads/' + req.file.filename;
     lobby.gameState.phase = 'PLAYING';
+    lobby.lastInteraction = Date.now();
     
     // Initialize polygon if needed
     if (!lobby.gameState.validPolygon) {
         lobby.gameState.validPolygon = turf.polygon([[[-360, 90], [360, 90], [360, -90], [-360, -90], [-360, 90]]]);
+    }
+
+    // Initialize turn if turn-based
+    if (lobby.settings.gameMode === 'turn_based') {
+        advanceTurn(lobby);
     }
 
     broadcastState(lobbyId);
@@ -233,16 +267,23 @@ io.on('connection', (socket) => {
         if (finalSettings.hintThresholds) {
             finalSettings.hintThresholds = finalSettings.hintThresholds.map(Number);
         }
-        if (finalSettings.minPop) {
-            finalSettings.minPop = Number(finalSettings.minPop);
-        }
+        if (finalSettings.minPop) finalSettings.minPop = Number(finalSettings.minPop);
+        if (finalSettings.moveTimeLimit) finalSettings.moveTimeLimit = Number(finalSettings.moveTimeLimit);
 
         lobbies.set(lobbyId, {
             players: [{ id: socket.id, nickname, role: 'setter', score: 0 }],
             gameState: JSON.parse(JSON.stringify(INITIAL_GAME_STATE)),
             settings: finalSettings,
             hostId: socket.id,
-            password: finalSettings.password
+            password: finalSettings.password,
+            lastInteraction: Date.now(),
+            setterAssignedAt: Date.now(),
+            setterWarned: false,
+            inactivityStrikes: 0,
+            turnState: {
+                currentGuesserId: null,
+                deadline: null
+            }
         });
         
         socket.join(lobbyId);
@@ -309,12 +350,16 @@ io.on('connection', (socket) => {
             return;
         }
 
+        lobby.lastInteraction = Date.now();
+
         // Capture the winner (who is now the setter) BEFORE resetting state
         const nextSetterId = lobby.gameState.setterId;
 
         // Reset state
         lobby.gameState = JSON.parse(JSON.stringify(INITIAL_GAME_STATE));
         lobby.gameState.phase = 'SETUP_LOC';
+        lobby.setterAssignedAt = Date.now();
+        lobby.setterWarned = false;
         
         // Restore the setter
         if (nextSetterId) {
@@ -331,6 +376,8 @@ io.on('connection', (socket) => {
     socket.on('send_chat', ({ lobbyId, message }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby) return;
+
+        lobby.lastInteraction = Date.now();
 
         const player = lobby.players.find(p => p.id === socket.id);
         if (!player) return;
@@ -384,17 +431,28 @@ io.on('connection', (socket) => {
             if (!response.ok) throw new Error(`Overpass API error: ${response.status}`);
             const data = await response.json();
             
-            const validPlace = data.elements.find(n => {
+            const validPlaces = data.elements.filter(n => {
                 const popStr = n.tags?.population?.replace(/,/g, '') || '0';
                 return parseInt(popStr, 10) > (lobby.settings.minPop || 5000);
             });
 
-            if (!validPlace) {
+            if (validPlaces.length === 0) {
                 socket.emit('error', `Invalid location: Must be a city/town with >${(lobby.settings.minPop || 5000)/1000}k population.`);
                 return;
             }
+
+            // Sort by distance to clicked point to find closest valid city
+            validPlaces.sort((a, b) => {
+                const latA = a.lat || a.center?.lat;
+                const lonA = a.lon || a.center?.lon;
+                const latB = b.lat || b.center?.lat;
+                const lonB = b.lon || b.center?.lon;
+                const distA = calculateHaversineDistance(lat, lon, latA, lonA);
+                const distB = calculateHaversineDistance(lat, lon, latB, lonB);
+                return distA - distB;
+            });
             
-            const placeToUse = validPlace;
+            const placeToUse = validPlaces[0];
 
             console.log(`[set_target] Valid location found: ${placeToUse.tags.name || 'Unknown'}`);
 
@@ -435,6 +493,10 @@ io.on('connection', (socket) => {
             } catch(e) {}
 
             lobby.gameState.phase = 'SETUP_IMG';
+            lobby.lastInteraction = Date.now();
+            lobby.setterAssignedAt = Date.now(); // Reset for image upload phase
+            lobby.setterWarned = false;
+            
             broadcastState(lobbyId);
 
         } catch (e) {
@@ -447,6 +509,16 @@ io.on('connection', (socket) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby || lobby.gameState.phase !== 'PLAYING') return;
         if (lobby.gameState.setterId === socket.id) return; // Setter can't guess
+
+        // Turn Logic
+        if (lobby.settings.gameMode === 'turn_based') {
+            if (lobby.turnState.currentGuesserId !== socket.id) {
+                socket.emit('error', 'Not your turn!');
+                return;
+            }
+        }
+
+        lobby.lastInteraction = Date.now();
 
         try {
             // Geocode
@@ -495,7 +567,12 @@ io.on('connection', (socket) => {
                 name, lat, lon, distance: dist, isSameCountry,
                 timestamp: Date.now()
             });
-            lobby.gameState.guesses.sort((a, b) => a.distance - b.distance);
+            // lobby.gameState.guesses.sort((a, b) => a.distance - b.distance); // Removed: Sort by time (insertion order)
+
+            // Advance Turn
+            if (lobby.settings.gameMode === 'turn_based') {
+                advanceTurn(lobby);
+            }
 
             // Win Condition
             if (dist <= 5) {
@@ -517,9 +594,10 @@ io.on('connection', (socket) => {
 
             // --- Powerups / Hints based on Guess Count ---
             const guessCount = lobby.gameState.guesses.length;
+            const thresholds = lobby.settings.hintThresholds || [30, 60, 90];
             
-            // 30 Guesses: Hemisphere Mask
-            if (guessCount === 30 && !lobby.gameState.hints.hemisphere) {
+            // Hint 1: Hemisphere Mask
+            if (guessCount === thresholds[0] && !lobby.gameState.hints.hemisphere) {
                 lobby.gameState.hints.hemisphere = true;
                 const isNorth = lobby.gameState.target.lat >= 0;
                 // Mask the WRONG hemisphere
@@ -530,8 +608,8 @@ io.on('connection', (socket) => {
                 } catch(e) { console.error("Hemisphere mask error", e); }
             }
 
-            // 60 Guesses: Continent Mask
-            if (guessCount === 60 && !lobby.gameState.hints.continent && lobby.gameState.target.continent) {
+            // Hint 2: Continent Mask
+            if (guessCount === thresholds[1] && !lobby.gameState.hints.continent && lobby.gameState.target.continent) {
                 lobby.gameState.hints.continent = true;
                 try {
                     // Note: Fetching continent polygon is heavy/complex. 
@@ -552,8 +630,8 @@ io.on('connection', (socket) => {
                 } catch(e) { console.error("Continent mask error", e); }
             }
 
-            // 90 Guesses: Country Reveal (if not already)
-            if (guessCount === 90 && !lobby.gameState.hints.country) {
+            // Hint 3: Country Reveal (if not already)
+            if (guessCount === thresholds[2] && !lobby.gameState.hints.country) {
                 lobby.gameState.hints.country = true;
                 try {
                     const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
@@ -730,6 +808,14 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('i_am_here', ({ lobbyId }) => {
+        const lobby = lobbies.get(lobbyId);
+        if (lobby && lobby.gameState.setterId === socket.id) {
+            lobby.setterAssignedAt = Date.now();
+            lobby.setterWarned = false;
+        }
+    });
+
     socket.on('disconnect', () => {
         handleDisconnect(socket);
     });
@@ -776,6 +862,72 @@ function handleDisconnect(socket, specificLobbyId = null) {
         }
     }
 }
+
+// --- Game Loop (1s Interval) ---
+setInterval(() => {
+    const now = Date.now();
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        
+        // 1. Lobby Inactivity (10 mins)
+        if (now - lobby.lastInteraction > 10 * 60 * 1000) {
+            console.log(`Lobby ${lobbyId} closed due to inactivity.`);
+            lobbies.delete(lobbyId);
+            io.to(lobbyId).emit('game_error', { code: 'LOBBY_CLOSED', message: 'Lobby closed due to inactivity.' });
+            continue;
+        }
+
+        // 2. Turn Timeout
+        if (lobby.gameState.phase === 'PLAYING' && lobby.settings.gameMode === 'turn_based' && lobby.turnState.deadline) {
+            if (now > lobby.turnState.deadline) {
+                advanceTurn(lobby);
+                broadcastState(lobbyId);
+            }
+        }
+
+        // 3. Setter Inactivity
+        if (lobby.gameState.phase === 'SETUP_LOC' || lobby.gameState.phase === 'SETUP_IMG') {
+            const timeSinceSet = now - lobby.setterAssignedAt;
+            
+            // Warning at 3 mins
+            if (timeSinceSet > 3 * 60 * 1000 && !lobby.setterWarned) {
+                lobby.setterWarned = true;
+                const socket = io.sockets.sockets.get(lobby.gameState.setterId);
+                if (socket) socket.emit('check_activity');
+            }
+
+            // Action at 5 mins
+            if (timeSinceSet > 5 * 60 * 1000) {
+                lobby.inactivityStrikes++;
+                if (lobby.inactivityStrikes >= 2) {
+                    lobbies.delete(lobbyId);
+                    io.to(lobbyId).emit('game_error', { code: 'LOBBY_CLOSED', message: 'Lobby closed due to repeated inactivity.' });
+                } else {
+                    // Force give up role
+                    // Find new setter
+                    const otherPlayers = lobby.players.filter(p => p.id !== lobby.gameState.setterId);
+                    if (otherPlayers.length > 0) {
+                        const nextSetter = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
+                        lobby.gameState.setterId = nextSetter.id;
+                        lobby.gameState.phase = 'SETUP_LOC';
+                        lobby.gameState.target = { lat: null, lon: null };
+                        lobby.gameState.image = null;
+                        lobby.gameState.guesses = [];
+                        lobby.gameState.validPolygon = null;
+                        lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
+                        lobby.setterAssignedAt = Date.now();
+                        lobby.setterWarned = false;
+                        
+                        io.to(lobbyId).emit('error', 'Setter was inactive. Role passed.');
+                        broadcastState(lobbyId);
+                    } else {
+                        // No one else? Close it.
+                        lobbies.delete(lobbyId);
+                    }
+                }
+            }
+        }
+    }
+}, 1000);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

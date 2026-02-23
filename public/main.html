@@ -64,6 +64,8 @@
 
         /* Fullscreen Image Overlay */
         #image-modal { backdrop-filter: blur(5px); }
+        #modal-img { transition: transform 0.1s ease-out; cursor: grab; }
+        #modal-img:active { cursor: grabbing; }
         
         /* Neo-brutal: Leaflet popups & controls */
         .leaflet-popup-content-wrapper { border: 3px solid #000; box-shadow: 4px 4px 0 0 #000; font-family: 'Play', sans-serif; }
@@ -76,12 +78,59 @@
 
     <!-- Version Tag -->
     <div class="fixed top-2 right-2 z-[9999] text-[10px] font-bold text-gray-400 opacity-50 pointer-events-none">
-        v1.2.0
+        v1.3.0
+    </div>
+
+    <!-- Tab Player List Overlay -->
+    <div id="tab-overlay" class="fixed inset-0 z-[30000] bg-black/80 hidden flex items-center justify-center">
+        <div class="bg-white border-4 border-black p-6 min-w-[400px] shadow-[8px_8px_0_0_#fff]">
+            <h2 class="text-2xl font-black mb-4 border-b-4 border-black pb-2">Connected Players</h2>
+            <div id="tab-player-list" class="flex flex-col gap-2">
+                <!-- Injected via JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Rules Modal -->
+    <div id="rules-modal" class="fixed inset-0 z-[25000] hidden flex items-center justify-center bg-black/80 p-4 opacity-0 transition-opacity duration-300" onclick="toggleRules()">
+        <div class="bg-white p-8 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-2xl w-full" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-6 border-b-4 border-black pb-4">
+                <h2 class="text-3xl font-black">How to Play</h2>
+                <button onclick="toggleRules()" class="neo-btn bg-black text-white p-2"><i data-lucide="x"></i></button>
+            </div>
+            
+            <div class="grid md:grid-cols-2 gap-8">
+                <div>
+                    <h3 class="text-xl font-bold mb-2 bg-[#fbbf24] inline-block px-2 border-2 border-black">The Setter</h3>
+                    <ul class="list-disc list-inside space-y-2 text-sm font-medium">
+                        <li>Choose a secret location on the map.</li>
+                        <li>Must be a city/town with <strong>>5k population</strong>.</li>
+                        <li>Upload a photo (or paste with Ctrl+V) that represents the spot.</li>
+                        <li>Wait for players to find you!</li>
+                        <li>You can give up your role if you're stuck.</li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="text-xl font-bold mb-2 bg-[#3b82f6] text-white inline-block px-2 border-2 border-black">The Guessers</h3>
+                    <ul class="list-disc list-inside space-y-2 text-sm font-medium">
+                        <li>Examine the photo and search the map.</li>
+                        <li>Click or type to guess a location.</li>
+                        <li><strong>Distance Rings</strong> appear to guide you.</li>
+                        <li><strong>Powerups</strong> unlock at 30, 60, 90 total guesses.</li>
+                        <li>First to find the location (within 5km) wins!</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="mt-6 pt-4 border-t-4 border-black text-center text-sm text-gray-500 font-bold">
+                Hold <span class="bg-gray-200 border border-black px-1 text-black">TAB</span> to see players
+            </div>
+        </div>
     </div>
 
     <!-- Lobby Overlay -->
     <div id="lobby-overlay" class="fixed inset-0 z-[20000] bg-[#f5f5f0] flex items-center justify-center p-4">
-        <div class="bg-white p-8 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-2xl w-full text-center flex flex-col h-[80vh]">
+        <div class="bg-white p-8 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-2xl w-full text-center flex flex-col h-[80vh] relative">
+            <button id="lobby-close-btn" onclick="closeLobbyOverlay()" class="absolute top-4 right-4 neo-btn bg-black text-white p-2 hidden"><i data-lucide="x"></i></button>
             <h1 class="text-4xl font-black mb-6">GTC Multiplayer</h1>
             
             <!-- Tabs -->
@@ -130,6 +179,17 @@
                             <input type="number" id="setting-hint2" value="60" class="neo-input w-1/3 p-2" placeholder="Continent">
                             <input type="number" id="setting-hint3" value="90" class="neo-input w-1/3 p-2" placeholder="Country">
                         </div>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">Game Mode</label>
+                        <select id="setting-gamemode" class="neo-input w-full p-2 bg-white" onchange="toggleTimeLimit()">
+                            <option value="ffa" selected>Free For All</option>
+                            <option value="turn_based">Turn Based</option>
+                        </select>
+                    </div>
+                    <div id="time-limit-container" class="hidden">
+                        <label class="block font-bold mb-1">Time Limit (Seconds)</label>
+                        <input type="number" id="setting-timelimit" value="30" class="neo-input w-full p-2" placeholder="30">
                     </div>
                     <div>
                         <label class="block font-bold mb-1">Password (Optional)</label>
@@ -206,11 +266,30 @@
         </div>
     </div>
 
+    <!-- Buy Me A Coffee -->
+    <a href="https://buymeacoffee.com/artysan" target="_blank" id="bmc-btn" class="fixed bottom-4 right-[22rem] z-[5000] bg-[#fbbf24] border-4 border-black shadow-[4px_4px_0_0_#000] p-2 hidden transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[2px_2px_0_0_#000] flex items-center justify-center group" title="Buy me a coffee">
+        <i data-lucide="heart" class="w-5 h-5 text-black group-hover:fill-red-500 transition-colors"></i>
+    </a>
+
+    <!-- Inactivity Check Modal -->
+    <div id="inactivity-modal" class="fixed inset-0 z-[40000] hidden flex items-center justify-center bg-black/80 p-4">
+        <div class="bg-white p-6 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-sm w-full text-center">
+            <h2 class="text-2xl font-black mb-4 text-red-600">Are you still there?</h2>
+            <p class="text-gray-600 mb-4">You have been inactive for a while. Please confirm to keep your role.</p>
+            <button onclick="confirmActivity()" class="neo-btn bg-[#22c55e] text-black font-bold py-3 w-full">
+                I'm Here!
+            </button>
+        </div>
+    </div>
+
     <!-- Chatbox -->
     <div id="chatbox" class="fixed bottom-4 right-4 z-[5000] w-80 bg-white border-4 border-black shadow-[6px_6px_0_0_#000] flex flex-col hidden transition-all duration-300">
-        <div class="bg-black text-white p-2 font-bold flex justify-between items-center cursor-pointer" onclick="toggleChat()">
-            <span>Chat</span>
-            <i data-lucide="chevron-down" id="chat-toggle-icon"></i>
+        <div class="bg-black text-white p-2 font-bold flex justify-between items-center">
+            <div class="flex items-center gap-2 cursor-pointer" onclick="toggleChat()">
+                <span>Chat</span>
+                <i data-lucide="chevron-down" id="chat-toggle-icon"></i>
+            </div>
+            <button onclick="togglePlayerList()" class="hover:text-gray-300"><i data-lucide="users" class="w-4 h-4"></i></button>
         </div>
         <div id="chat-messages" class="h-64 overflow-y-auto p-2 bg-[#f5f5f0] flex flex-col gap-2 text-sm">
             <!-- Messages -->
@@ -228,7 +307,11 @@
                 <i data-lucide="map-pin"></i>
                 <span>GTC</span>
             </div>
-            <button id="btn-restart" class="text-sm font-bold border-2 border-black px-3 py-1 bg-white hover:bg-black hover:text-white transition-colors shadow-[2px_2px_0_0_#000] hidden" onclick="resetGame()">Restart</button>
+            <div class="flex gap-2">
+                <button onclick="openInGameLeaderboard()" class="neo-btn bg-white p-1.5" title="Leaderboard"><i data-lucide="bar-chart-2" class="w-5 h-5"></i></button>
+                <button onclick="toggleRules()" class="neo-btn bg-white p-1.5" title="Rules"><i data-lucide="help-circle" class="w-5 h-5"></i></button>
+                <button onclick="leaveLobby()" class="neo-btn bg-red-500 text-white p-1.5" title="Leave Game"><i data-lucide="log-out" class="w-5 h-5"></i></button>
+            </div>
         </header>
 
         <div id="ui-content" class="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-white">
@@ -258,6 +341,8 @@
         let myNickname = null;
         let myRole = 'guesser'; // 'setter' or 'guesser'
         let isProcessing = false;
+        let guessQueue = []; // Queue for guesses
+        let tempGuessMarker = null; // Visual feedback for click
 
         let state = {
             phase: GameState.LOBBY,
@@ -270,7 +355,10 @@
             hintCities: null,
             hintCitiesFetched: false,
             hints: { hemisphere: false, continent: false, country: false },
-            players: []
+            players: [],
+            settings: {},
+            turnState: { currentGuesserId: null, deadline: null },
+            timeLeft: null
         };
 
         // --- Map Variables ---
@@ -278,6 +366,7 @@
         let targetMarker = null;
         let victoryMarker = null;
         let guessMarkersLayer = L.layerGroup();
+        let redCirclesLayer = L.layerGroup();
         let maskLayers = L.layerGroup();
         let hintMarkersLayer = L.layerGroup();
 
@@ -287,6 +376,19 @@
             initMap();
             document.addEventListener('paste', handleGlobalPaste);
             
+            // Tab Listener
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    if (state.phase !== GameState.LOBBY) showPlayerList();
+                }
+            });
+            document.addEventListener('keyup', (e) => {
+                if (e.key === 'Tab') {
+                    document.getElementById('tab-overlay').classList.add('hidden');
+                }
+            });
+
             // Initial Lobby Refresh
             refreshLobbies();
             
@@ -295,6 +397,7 @@
                 myLobbyId = lobbyId;
                 document.getElementById('lobby-overlay').classList.add('hidden');
                 document.getElementById('chatbox').classList.remove('hidden'); // Show chat
+                document.getElementById('bmc-btn').classList.remove('hidden'); // Show BMC
                 showToast(`Lobby Created: ${lobbyId}`, "info");
             });
 
@@ -320,6 +423,10 @@
                 renderLeaderboard('wins'); // Default view
             });
 
+            socket.on('check_activity', () => {
+                document.getElementById('inactivity-modal').classList.remove('hidden');
+            });
+
             socket.on('game_state_update', (newState) => {
                 isProcessing = false; // Reset loading state on update
                 // Merge state
@@ -328,6 +435,8 @@
                 // Handle complex objects
                 if (newState.wrongCountries) state.wrongCountries = newState.wrongCountries; // Array from server
                 if (newState.validPolygon) state.validPolygon = newState.validPolygon;
+                if (newState.turnState) state.turnState = newState.turnState;
+                if (newState.timeLeft !== undefined) state.timeLeft = newState.timeLeft;
                 
                 // Determine my role
                 const me = state.players.find(p => p.id === socket.id);
@@ -336,12 +445,17 @@
                 // Sync Map
                 syncMapState();
                 renderUI();
+                
+                // Process next guess in queue
+                setTimeout(processQueue, 100);
             });
 
             socket.on('error', (msg) => {
                 isProcessing = false;
                 renderUI(); // Re-render to clear loading states
                 showToast(msg, 'error');
+                // Process next guess in queue even if error
+                setTimeout(processQueue, 100);
             });
             
             // Critical Error Handler (e.g. Server Restart)
@@ -360,6 +474,7 @@
                 const chatBox = document.getElementById('chatbox');
                 if (chatBox.classList.contains('hidden') && state.phase !== GameState.LOBBY) {
                     chatBox.classList.remove('hidden');
+                    document.getElementById('bmc-btn').classList.remove('hidden');
                 }
                 
                 const msgs = document.getElementById('chat-messages');
@@ -382,6 +497,53 @@
                 msgs.scrollTop = msgs.scrollHeight;
             });
         });
+
+        function openInGameLeaderboard() {
+            document.getElementById('lobby-overlay').classList.remove('hidden');
+            document.getElementById('lobby-close-btn').classList.remove('hidden');
+            switchTab('leaderboard');
+        }
+
+        function closeLobbyOverlay() {
+            document.getElementById('lobby-overlay').classList.add('hidden');
+        }
+
+        function togglePlayerList() {
+            const overlay = document.getElementById('tab-overlay');
+            if (overlay.classList.contains('hidden')) {
+                showPlayerList();
+            } else {
+                overlay.classList.add('hidden');
+            }
+        }
+
+        function showPlayerList() {
+            const overlay = document.getElementById('tab-overlay');
+            const list = document.getElementById('tab-player-list');
+            
+            list.innerHTML = state.players.map(p => `
+                <div class="flex justify-between items-center bg-[#f5f5f0] p-3 border-2 border-black">
+                    <div class="flex items-center gap-2">
+                        <span class="font-bold ${p.id === socket.id ? 'text-green-600' : ''}">${p.nickname} ${p.id === socket.id ? '(You)' : ''}</span>
+                        ${p.role === 'setter' ? '<span class="bg-red-500 text-white text-[10px] px-1 border border-black">SETTER</span>' : ''}
+                    </div>
+                    <div class="text-sm font-bold">${window.leaderboardCache?.wins?.[p.nickname] || 0} Wins</div>
+                </div>
+            `).join('');
+            
+            overlay.classList.remove('hidden');
+        }
+
+        function toggleRules() {
+            const modal = document.getElementById('rules-modal');
+            if (modal.classList.contains('hidden')) {
+                modal.classList.remove('hidden');
+                setTimeout(() => modal.classList.remove('opacity-0'), 10);
+            } else {
+                modal.classList.add('opacity-0');
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
 
         function switchTab(tab) {
             ['browse', 'create', 'join', 'leaderboard'].forEach(t => {
@@ -406,6 +568,16 @@
             document.getElementById('lobby-id-input').value = id;
         }
 
+        function toggleTimeLimit() {
+            const mode = document.getElementById('setting-gamemode').value;
+            const container = document.getElementById('time-limit-container');
+            if (mode === 'turn_based') {
+                container.classList.remove('hidden');
+            } else {
+                container.classList.add('hidden');
+            }
+        }
+
         function createLobby() {
             const name = document.getElementById('nickname-input-create').value.trim();
             if (!name) return showToast('Enter a nickname', 'error');
@@ -417,7 +589,9 @@
                     document.getElementById('setting-hint2').value,
                     document.getElementById('setting-hint3').value
                 ],
-                password: document.getElementById('setting-password').value.trim() || null
+                password: document.getElementById('setting-password').value.trim() || null,
+                gameMode: document.getElementById('setting-gamemode').value,
+                moveTimeLimit: document.getElementById('setting-timelimit').value
             };
 
             myNickname = name;
@@ -436,6 +610,7 @@
             socket.emit('join_lobby', { lobbyId: id, nickname: name, password: pass || null });
             document.getElementById('lobby-overlay').classList.add('hidden');
             document.getElementById('chatbox').classList.remove('hidden'); // Show chat
+            document.getElementById('bmc-btn').classList.remove('hidden'); // Show BMC
         }
 
         function leaveLobby() {
@@ -491,14 +666,31 @@
         function syncMapState() {
             // Clear old layers
             guessMarkersLayer.clearLayers();
+            redCirclesLayer.clearLayers();
             maskLayers.clearLayers();
             if (targetMarker) { map.removeLayer(targetMarker); targetMarker = null; }
             if (victoryMarker) { map.removeLayer(victoryMarker); victoryMarker = null; }
 
-            // Draw Guesses
+            // Draw Guesses & Red Circles
+            const thresholds = [250, 100, 50, 20, 10, 5];
             state.guesses.forEach(g => {
                 const m = L.marker([g.lat, g.lon]).addTo(guessMarkersLayer);
                 m.bindPopup(`<b>${g.nickname}</b>: ${g.name}`);
+
+                // Red Circle Logic (Exclusion)
+                let max_T = 0;
+                for (let t of thresholds) { if (g.distance > t) { max_T = t; break; } }
+                
+                if (max_T > 0) {
+                    L.circle([g.lat, g.lon], {
+                        radius: max_T * 1000,
+                        color: '#ef4444',
+                        fill: false,
+                        weight: 2,
+                        dashArray: '5, 5',
+                        interactive: false
+                    }).addTo(redCirclesLayer);
+                }
             });
 
             // Draw Mask
@@ -525,7 +717,13 @@
         }
 
         function initMap() {
-            map = L.map('map', { zoomControl: false }).setView([20, 0], 2);
+            map = L.map('map', { 
+                zoomControl: false,
+                minZoom: 2,
+                maxBounds: [[-90, -180], [90, 180]],
+                maxBoundsViscosity: 1.0,
+                worldCopyJump: false // Disable repeating worlds
+            }).setView([20, 0], 2);
             
             map.createPane('maskFillPane');
             map.getPane('maskFillPane').style.zIndex = 399; 
@@ -538,7 +736,25 @@
                 attribution: '&copy; OpenStreetMap contributors'
             }).addTo(map);
 
+            // Force English labels by using a different tile provider or overlay if available.
+            // Standard OSM tiles are localized. 
+            // CartoDB Voyager is a good alternative with English labels and clean style.
+            // Or we can try to find an English-forced OSM tile server.
+            // For now, let's switch to CartoDB Voyager which is English-first and cleaner.
+            map.eachLayer((layer) => {
+                if (layer instanceof L.TileLayer) {
+                    map.removeLayer(layer);
+                }
+            });
+
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 20
+            }).addTo(map);
+
             guessMarkersLayer.addTo(map);
+            redCirclesLayer.addTo(map);
             maskLayers.addTo(map);
             hintMarkersLayer.addTo(map);
 
@@ -615,6 +831,15 @@
 
             // Guesser Logic (Click to guess)
             if (myRole === 'guesser' && state.phase === GameState.PLAYING) {
+                // Add Pinpoint
+                if (tempGuessMarker) map.removeLayer(tempGuessMarker);
+                const icon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<div style="background-color: #3b82f6; width: 16px; height: 16px; border: 2px solid #fff; border-radius: 50%; box-shadow: 2px 2px 4px rgba(0,0,0,0.5);"></div>`,
+                    iconSize: [16, 16], iconAnchor: [8, 8]
+                });
+                tempGuessMarker = L.marker([lat, lng], { icon }).addTo(map);
+
                 try {
                     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`, {
                         headers: { 'Accept-Language': 'en' }
@@ -639,6 +864,45 @@
             }
         }
 
+        async function handleSetterSearch(e) {
+            e.preventDefault();
+            const input = document.getElementById('setter-search-input');
+            const query = input.value.trim();
+            if (!query) return;
+
+            isProcessing = true;
+            renderUI();
+
+            try {
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`, {
+                    headers: { 'Accept-Language': 'en' }
+                });
+                const data = await res.json();
+                
+                if (data && data.length > 0) {
+                    const lat = parseFloat(data[0].lat);
+                    const lon = parseFloat(data[0].lon);
+                    
+                    // Set temp target
+                    window.tempTarget = { lat, lng: lon };
+                    
+                    // Update Map
+                    if (targetMarker) map.removeLayer(targetMarker);
+                    targetMarker = L.marker([lat, lon]).addTo(map);
+                    map.setView([lat, lon], 10);
+                    
+                    showToast(`Found: ${data[0].display_name.split(',')[0]}`, "info");
+                } else {
+                    showToast("Location not found", "error");
+                }
+            } catch(e) {
+                showToast("Search failed", "error");
+            } finally {
+                isProcessing = false;
+                renderUI();
+            }
+        }
+
         function confirmTargetLocation() {
             if (window.tempTarget) {
                 isProcessing = true;
@@ -651,17 +915,25 @@
             }
         }
 
-        async function handleGuessSubmit(e) {
+        function handleGuessSubmit(e) {
             e.preventDefault();
             const input = document.getElementById('guess-input');
             const query = input.value.trim();
             if (!query) return;
             
+            guessQueue.push(query);
+            input.value = '';
+            processQueue();
+        }
+
+        function processQueue() {
+            if (isProcessing || guessQueue.length === 0) return;
+            
+            const query = guessQueue.shift();
             isProcessing = true;
             renderUI(); // Show loading state
             
             socket.emit('submit_guess', { lobbyId: myLobbyId, query });
-            input.value = '';
         }
 
         function processGuess(name, lat, lon, countryCode) {
@@ -669,7 +941,7 @@
             const isSameCountry = (countryCode === state.target.countryCode);
 
             state.guesses.push({ name, lat, lon, distance: dist, isSameCountry });
-            state.guesses.sort((a, b) => a.distance - b.distance);
+            // state.guesses.sort((a, b) => a.distance - b.distance); // Removed: Sort by time
 
             const marker = L.marker([lat, lon]).addTo(guessMarkersLayer);
             marker.bindPopup(`<b>${name}</b>`).openPopup();
@@ -704,6 +976,16 @@
                     let diff = turf.difference(newPoly, circle);
                     if (diff) newPoly = diff;
                 } catch(e){}
+                
+                // Add Red Circle Visual
+                L.circle([lat, lon], {
+                    radius: max_T * 1000,
+                    color: '#ef4444',
+                    fill: false,
+                    weight: 2,
+                    dashArray: '5, 5',
+                    interactive: false
+                }).addTo(redCirclesLayer);
             }
             
             let min_T = Infinity;
@@ -1046,7 +1328,11 @@
                                     </button>
                                 ` : `
                                     <i data-lucide="map" class="w-12 h-12 text-gray-500 mb-4"></i>
-                                    <p class="text-gray-600 font-medium">Click map to select...</p>
+                                    <p class="text-gray-600 font-medium mb-4">Click map OR search below...</p>
+                                    <form onsubmit="handleSetterSearch(event)" class="w-full flex gap-2">
+                                        <input type="text" id="setter-search-input" class="neo-input flex-1 p-2 text-sm" placeholder="Type city (e.g. Paris, France)...">
+                                        <button type="submit" class="neo-btn bg-black text-white px-3 font-bold"><i data-lucide="search" class="w-4 h-4"></i></button>
+                                    </form>
                                 `}
                             </div>
                             
@@ -1102,6 +1388,9 @@
             else if (state.phase === GameState.PLAYING) {
                 const gCount = state.guesses.length;
                 const isSetter = myRole === 'setter';
+                const isTurnBased = state.settings?.gameMode === 'turn_based';
+                const isMyTurn = isTurnBased && state.turnState?.currentGuesserId === socket.id;
+                const currentGuesser = state.players.find(p => p.id === state.turnState?.currentGuesserId);
                 
                 container.innerHTML = `
                     <div class="w-full aspect-video overflow-hidden border-4 border-black shadow-[4px_4px_0_0_#000] cursor-pointer relative group shrink-0" onclick="openImageModal('${state.image}')">
@@ -1111,50 +1400,85 @@
                         </div>
                     </div>
 
-                    <form onsubmit="handleGuessSubmit(event)" class="mt-4 flex gap-2 shrink-0 ${isSetter ? 'hidden' : ''}">
-                        <div class="relative flex-1">
-                            <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 w-5 h-5"></i>
-                            <input type="text" id="guess-input" placeholder="${isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${isProcessing ? 'disabled' : ''}>
+                    ${isTurnBased ? `
+                        <div class="mt-4 p-3 border-4 border-black text-center font-bold shadow-[4px_4px_0_0_#000] ${isMyTurn ? 'bg-[#22c55e] text-black' : 'bg-white text-gray-600'}">
+                            ${isMyTurn ? `YOUR TURN! ${state.timeLeft ? `(${state.timeLeft}s)` : ''}` : `Current Turn: ${currentGuesser?.nickname || 'Unknown'} ${state.timeLeft ? `(${state.timeLeft}s)` : ''}`}
                         </div>
-                        <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${isProcessing ? 'disabled' : ''}>
-                            ${isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
-                        </button>
-                    </form>
+                    ` : ''}
+
+                    ${isTurnBased && !isMyTurn && !isSetter ? `
+                        <div class="mt-4 p-4 bg-gray-100 border-4 border-black text-center">
+                            <p class="font-bold text-lg mb-1">Waiting for ${currentGuesser?.nickname || 'player'}...</p>
+                            <p class="text-sm text-gray-500 font-bold">
+                                ${(() => {
+                                    const guessers = state.players.filter(p => p.role === 'guesser');
+                                    const myIdx = guessers.findIndex(p => p.id === socket.id);
+                                    const currentIdx = guessers.findIndex(p => p.id === state.turnState?.currentGuesserId);
+                                    let turns = 0;
+                                    if (myIdx !== -1 && currentIdx !== -1) {
+                                        if (myIdx > currentIdx) turns = myIdx - currentIdx;
+                                        else turns = (guessers.length - currentIdx) + myIdx;
+                                    }
+                                    return turns === 1 ? 'You are next!' : `${turns} turns until you`;
+                                })()}
+                            </p>
+                        </div>
+                    ` : `
+                        <form onsubmit="handleGuessSubmit(event)" class="mt-4 flex gap-2 shrink-0 ${isSetter ? 'hidden' : ''}">
+                            <div class="relative flex-1">
+                                <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 w-5 h-5"></i>
+                                <input type="text" id="guess-input" placeholder="${isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${isProcessing ? 'disabled' : ''}>
+                            </div>
+                            <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${isProcessing ? 'disabled' : ''}>
+                                ${isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
+                            </button>
+                        </form>
+                    `}
                     
                     ${isSetter ? `
                         <div class="mt-4 bg-[#fbbf24] p-3 border-4 border-black text-center font-bold shadow-[4px_4px_0_0_#000]">
                             You are the Setter. Wait for guesses!
                         </div>
+                        <div class="mt-2 bg-white p-2 border-2 border-black text-center text-sm font-bold">
+                            Current Guesses: ${state.guesses.length}
+                        </div>
                     ` : ''}
 
-                    <div class="mt-4 flex-1 overflow-y-auto flex flex-col gap-4">
-                        <!-- Powerups Progress -->
-                        ${!isSetter ? `
-                            <div class="bg-gray-100 p-2 border-2 border-black text-xs">
-                                <div class="flex justify-between font-bold mb-1">
-                                    <span>Hints Unlock:</span>
-                                    <span>${state.guesses.length} Guesses</span>
-                                </div>
-                                <div class="flex gap-1 h-2">
-                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[0] || 30) ? 'bg-green-500' : ''}"></div>
-                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[1] || 60) ? 'bg-green-500' : ''}"></div>
-                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[2] || 90) ? 'bg-green-500' : ''}"></div>
-                                </div>
-                                <div class="flex justify-between text-[10px] mt-1 text-gray-500">
-                                    <span>${state.settings?.hintThresholds?.[0] || 30}</span>
-                                    <span>${state.settings?.hintThresholds?.[1] || 60}</span>
-                                    <span>${state.settings?.hintThresholds?.[2] || 90}</span>
-                                </div>
+                    <!-- Powerups Progress (Sticky) -->
+                    <div class="mt-4 bg-gray-100 p-2 border-2 border-black text-xs shrink-0">
+                        <div class="flex justify-between font-bold mb-1">
+                            <span>Hints Unlock:</span>
+                            <span>${state.guesses.length} Guesses</span>
+                        </div>
+                        <div class="flex gap-1 h-2 mb-1">
+                            <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[0] || 30) ? 'bg-green-500' : ''}"></div>
+                            <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[1] || 60) ? 'bg-green-500' : ''}"></div>
+                            <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[2] || 90) ? 'bg-green-500' : ''}"></div>
+                        </div>
+                        <div class="flex justify-between text-[10px] text-gray-600 font-bold">
+                            <div class="text-center w-1/3">
+                                <span>${state.settings?.hintThresholds?.[0] || 30}</span><br>
+                                <span class="text-[9px] uppercase">Hemisphere</span>
                             </div>
-                        ` : ''}
+                            <div class="text-center w-1/3">
+                                <span>${state.settings?.hintThresholds?.[1] || 60}</span><br>
+                                <span class="text-[9px] uppercase">Continent</span>
+                            </div>
+                            <div class="text-center w-1/3">
+                                <span>${state.settings?.hintThresholds?.[2] || 90}</span><br>
+                                <span class="text-[9px] uppercase">Country</span>
+                            </div>
+                        </div>
+                    </div>
 
+                    <div class="flex-1 overflow-y-auto flex flex-col gap-4">
                         <div>
                             <h3 class="text-sm font-bold text-black uppercase tracking-wider mb-3">Guesses</h3>
                             ${state.guesses.length === 0 ? `
                                 <p class="text-center text-gray-600 italic mt-4 mb-4">No guesses yet.</p>
                             ` : `
                                 <div class="flex flex-col gap-3">
-                                    ${state.guesses.map((g, i) => {
+                                    ${state.guesses.slice().reverse().map((g, i) => {
                                         const badges = getDistanceBadges(g.distance, g.isSameCountry);
                                         return `
                                         <div class="bg-white p-3 border-4 border-black shadow-[3px_3px_0_0_#000] flex flex-col gap-2 ${i === 0 ? 'bg-[#fbbf24]' : ''}">
@@ -1247,7 +1571,52 @@
 
         function openImageModal(src) {
             const modal = document.getElementById('image-modal');
-            document.getElementById('modal-img').src = src;
+            const img = document.getElementById('modal-img');
+            img.src = src;
+            
+            // Reset Zoom
+            let scale = 1;
+            let panning = false;
+            let pointX = 0;
+            let pointY = 0;
+            let startX = 0;
+            let startY = 0;
+            
+            img.style.transform = `translate(0px, 0px) scale(1)`;
+
+            // Zoom Handler
+            img.onwheel = (e) => {
+                e.preventDefault();
+                const xs = (e.clientX - pointX) / scale;
+                const ys = (e.clientY - pointY) / scale;
+                const delta = -e.deltaY;
+                
+                (delta > 0) ? (scale *= 1.2) : (scale /= 1.2);
+                if (scale < 1) scale = 1; // Min zoom
+                
+                pointX = e.clientX - xs * scale;
+                pointY = e.clientY - ys * scale;
+
+                img.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
+            }
+
+            // Pan Handler
+            img.onmousedown = (e) => {
+                e.preventDefault();
+                startX = e.clientX - pointX;
+                startY = e.clientY - pointY;
+                panning = true;
+            }
+
+            img.onmouseup = (e) => { panning = false; }
+            img.onmousemove = (e) => {
+                e.preventDefault();
+                if (!panning) return;
+                pointX = e.clientX - startX;
+                pointY = e.clientY - startY;
+                img.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
+            }
+
             modal.classList.remove('hidden');
             setTimeout(() => modal.classList.remove('opacity-0'), 10);
         }
@@ -1295,6 +1664,11 @@
         function confirmRoleHandover(targetId) {
             socket.emit('give_up_role', { lobbyId: myLobbyId, targetUserId: targetId });
             closeHandoverModal();
+        }
+
+        function confirmActivity() {
+            socket.emit('i_am_here', { lobbyId: myLobbyId });
+            document.getElementById('inactivity-modal').classList.add('hidden');
         }
 
         function sendChat(e) {
