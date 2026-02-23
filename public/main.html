@@ -92,7 +92,7 @@
 
     <!-- Version Tag (clickable → patch notes) -->
     <button type="button" id="version-tag" onclick="togglePatchNotes()" class="fixed bottom-2 left-2 z-[5000] text-xs font-bold text-gray-600 hover:text-black bg-white/90 hover:bg-white border-2 border-black shadow-[2px_2px_0_0_#000] px-2 py-1 cursor-pointer transition-colors" title="Patch notes">
-        v1.6.0
+        v1.6.1
     </button>
 
     <!-- Patch Notes Modal -->
@@ -232,7 +232,7 @@
                         <input type="number" id="setting-timelimit" value="30" class="neo-input w-full p-2" placeholder="30">
                     </div>
                     <div class="flex items-center gap-2">
-                        <input type="checkbox" id="setting-hider-victory" class="w-4 h-4">
+                        <input type="checkbox" id="setting-hider-victory" class="w-4 h-4" checked>
                         <label for="setting-hider-victory" class="font-bold">Hider victory (setter wins at 1.25× country threshold)</label>
                     </div>
                     <div>
@@ -523,6 +523,7 @@
                 }
                 // Merge state
                 state = { ...state, ...newState };
+                if (newState.settings) state.settings = newState.settings; // Server-authoritative lobby settings (hintThresholds etc.)
                 
                 // Handle complex objects
                 if (newState.wrongCountries) state.wrongCountries = newState.wrongCountries; // Array from server
@@ -1842,22 +1843,25 @@
                         </div>
                         <div class="flex gap-0.5 h-2 mb-1">
                             ${(() => {
-                                const th = state.settings?.hintThresholds || [5,10,15,20,25];
+                                const defaultTh = [5,10,15,20,25];
+                                const th = state.settings?.hintThresholds && state.settings.hintThresholds.length >= 5 ? state.settings.hintThresholds : defaultTh;
                                 const g = state.guesses.length;
                                 const stage = state.powerupStage || 0;
                                 return [0,1,2,3,4].map(i => {
-                                    const t = th[i] || 20*(i+1);
+                                    const t = th[i] ?? defaultTh[i];
+                                    const prev = th[i-1] ?? defaultTh[i-1];
                                     const done = stage > i || (i === 4 && stage >= 5);
-                                    const p = i === 0 ? Math.min(100, (g / t) * 100) : g < th[i-1] ? 0 : Math.min(100, ((g - th[i-1]) / (t - th[i-1])) * 100);
+                                    const p = i === 0 ? Math.min(100, (g / t) * 100) : g < prev ? 0 : Math.min(100, ((g - prev) / (t - prev)) * 100);
                                     return `<div class="flex-1 bg-white border border-black overflow-hidden" title="Stage ${i+1} at ${t}"><div class="h-full ${done ? 'bg-green-600' : 'bg-green-500'} transition-[width] duration-300 ease-out" style="width:${done ? 100 : p}%"></div></div>`;
                                 }).join('');
                             })()}
                         </div>
                         <div class="flex justify-between text-[9px] text-gray-600 font-bold">
                             ${[0,1,2,3,4].map(i => {
-                                const th = state.settings?.hintThresholds || [5,10,15,20,25];
+                                const defaultTh = [5,10,15,20,25];
+                                const th = state.settings?.hintThresholds && state.settings.hintThresholds.length >= 5 ? state.settings.hintThresholds : defaultTh;
                                 const label = i < 4 ? `P${i+1}` : 'Country';
-                                const t = th[i];
+                                const t = th[i] ?? defaultTh[i];
                                 return `<span>${label} @${t}</span>`;
                             }).join('')}
                         </div>

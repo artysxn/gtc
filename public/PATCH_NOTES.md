@@ -1,5 +1,10 @@
 # Patch Notes
 
+## v1.6.1
+
+- **Hint thresholds from lobby**: In-game stage bar and labels (P1 @5, Country @30, etc.) now always use the lobby’s configured hint thresholds from settings; no more wrong defaults (e.g. 20–40–60–80). Settings are merged from the server on every game state update.
+- **Hider victory default**: Hider victory is now **on by default** when creating a lobby (checkbox checked).
+
 ## v1.6.0
 
 - **Powerup voting system**: Replaced the old 3 fixed hints (hemisphere/continent/country) with 5 stages. At stages 1–4, the server draws 2 powerups from a pool; guessers vote for 10 seconds via animated cards on the map; the winner is applied to all. Stage 5 always reveals the country (no vote). You must vote (or wait for the timer) before guessing again when a stage unlocks.

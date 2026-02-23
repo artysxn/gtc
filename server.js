@@ -125,7 +125,7 @@ const DEFAULT_SETTINGS = {
     password: null,
     gameMode: 'ffa', // 'ffa' or 'turn_based'
     moveTimeLimit: 0, // Seconds, 0 = off
-    hiderVictoryEnabled: false // If true, setter wins when guess count reaches 1.25× country threshold
+    hiderVictoryEnabled: true // If true, setter wins when guess count reaches 1.25× country threshold
 };
 
 // Powerup IDs (used for conditionals and activePowerups)
