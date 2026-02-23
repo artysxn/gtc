@@ -695,9 +695,9 @@ io.on('connection', (socket) => {
             }
 
             // Distance Rings
-            const thresholds = [250, 100, 50, 20, 10, 5];
+            const distThresholds = [250, 100, 50, 20, 10, 5];
             let max_T = 0;
-            for (let t of thresholds) { if (dist > t) { max_T = t; break; } }
+            for (let t of distThresholds) { if (dist > t) { max_T = t; break; } }
             
             if (max_T > 0) {
                 const circle = turf.circle([lon, lat], max_T, {units: 'kilometers', steps: 24});
@@ -706,7 +706,7 @@ io.on('connection', (socket) => {
             }
 
             let min_T = Infinity;
-            const ascendingThresholds = [...thresholds].reverse();
+            const ascendingThresholds = [...distThresholds].reverse();
             for (let t of ascendingThresholds) { if (dist <= t) { min_T = t; break; } }
 
             if (min_T !== Infinity) {
