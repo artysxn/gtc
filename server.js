@@ -142,6 +142,20 @@ async function fetchWithTimeout(url, options = {}) {
     }
 }
 
+// Helper to simplify geometry and reduce memory usage
+function optimizeGeometry(geoJson) {
+    if (!geoJson) return null;
+    try {
+        // Simplify: tolerance 0.01 degrees (~1km), highQuality false for speed
+        const simplified = turf.simplify(geoJson, { tolerance: 0.01, highQuality: false, mutate: true });
+        // Truncate: limit coordinates to 4 decimal places
+        return turf.truncate(simplified, { precision: 4, coordinates: 2, mutate: true });
+    } catch (e) {
+        console.warn("Geometry optimization failed:", e);
+        return geoJson;
+    }
+}
+
 // --- Routes ---
 
 app.post('/upload', upload.single('image'), (req, res) => {
@@ -433,19 +447,21 @@ io.on('connection', (socket) => {
             if (guessCount === 60 && !lobby.gameState.hints.continent && lobby.gameState.target.continent) {
                 lobby.gameState.hints.continent = true;
                 try {
-                // Note: Fetching continent polygon is heavy/complex. 
-                // For now, we'll try a Nominatim search for the continent name.
-                const contRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(lobby.gameState.target.continent)}&format=json&polygon_geojson=1&limit=1`, {
-                    headers: { 'User-Agent': 'GTC-Game/1.0' }
-                });
-                if (contRes.ok) {
-                    const contData = await contRes.json();
-                    if (contData?.[0]?.geojson) {
-                        const contFeat = turf.feature(contData[0].geojson);
-                        const intersect = turf.intersect(turf.featureCollection([newPoly, contFeat]));
-                        if (intersect) newPoly = intersect;
+                    // Note: Fetching continent polygon is heavy/complex. 
+                    // For now, we'll try a Nominatim search for the continent name.
+                    const contRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(lobby.gameState.target.continent)}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
+                        headers: { 'User-Agent': 'GTC-Game/1.0' }
+                    });
+                    if (contRes.ok) {
+                        const contData = await contRes.json();
+                        if (contData?.[0]?.geojson) {
+                            let contFeat = turf.feature(contData[0].geojson);
+                            contFeat = optimizeGeometry(contFeat); // Optimize
+
+                            const intersect = turf.intersect(turf.featureCollection([newPoly, contFeat]));
+                            if (intersect) newPoly = intersect;
+                        }
                     }
-                }
                 } catch(e) { console.error("Continent mask error", e); }
             }
 
@@ -453,13 +469,15 @@ io.on('connection', (socket) => {
             if (guessCount === 90 && !lobby.gameState.hints.country) {
                 lobby.gameState.hints.country = true;
                 try {
-                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&limit=1`, {
+                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
                         headers: { 'User-Agent': 'GTC-Game/1.0' }
                     });
                     if (polyRes.ok) {
                         const polyData = await polyRes.json();
                         if (polyData?.[0]?.geojson) {
-                            const countryFeat = turf.feature(polyData[0].geojson);
+                            let countryFeat = turf.feature(polyData[0].geojson);
+                            countryFeat = optimizeGeometry(countryFeat); // Optimize
+
                             const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
                             if (intersect) newPoly = intersect;
                         }
@@ -474,13 +492,16 @@ io.on('connection', (socket) => {
                 // For MVP, we'll mark it revealed and let clients fetch mask or fetch here.
                 // Better: Fetch here and update polygon.
                 try {
-                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&limit=1`, {
+                    // Added polygon_threshold=0.01 to reduce initial payload size
+                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
                         headers: { 'User-Agent': 'GTC-Game/1.0' }
                     });
                     if (polyRes.ok) {
                         const polyData = await polyRes.json();
                         if (polyData?.[0]?.geojson) {
-                            const countryFeat = turf.feature(polyData[0].geojson);
+                            let countryFeat = turf.feature(polyData[0].geojson);
+                            countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
+                            
                             const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
                             if (intersect) newPoly = intersect;
                             else newPoly = countryFeat;
@@ -491,13 +512,15 @@ io.on('connection', (socket) => {
             } else if (!isSameCountry && countryCode) {
                 // Mask Wrong Country
                  try {
-                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&limit=1`, {
+                    const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
                         headers: { 'User-Agent': 'GTC-Game/1.0' }
                     });
                     if (polyRes.ok) {
                         const polyData = await polyRes.json();
                         if (polyData?.[0]?.geojson) {
-                            const countryFeat = turf.feature(polyData[0].geojson);
+                            let countryFeat = turf.feature(polyData[0].geojson);
+                            countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
+
                             const diff = turf.difference(turf.featureCollection([newPoly, countryFeat]));
                             if (diff) newPoly = diff;
                             lobby.gameState.wrongCountries.push(countryCode);
@@ -512,7 +535,7 @@ io.on('connection', (socket) => {
             for (let t of thresholds) { if (dist > t) { max_T = t; break; } }
             
             if (max_T > 0) {
-                const circle = turf.circle([lon, lat], max_T, {units: 'kilometers', steps: 32});
+                const circle = turf.circle([lon, lat], max_T, {units: 'kilometers', steps: 24});
                 const diff = turf.difference(turf.featureCollection([newPoly, circle]));
                 if (diff) newPoly = diff;
             }
@@ -522,12 +545,12 @@ io.on('connection', (socket) => {
             for (let t of ascendingThresholds) { if (dist <= t) { min_T = t; break; } }
 
             if (min_T !== Infinity) {
-                const circle = turf.circle([lon, lat], min_T, {units: 'kilometers', steps: 32});
+                const circle = turf.circle([lon, lat], min_T, {units: 'kilometers', steps: 24});
                 const intersect = turf.intersect(turf.featureCollection([newPoly, circle]));
                 if (intersect) newPoly = intersect;
             }
 
-            lobby.gameState.validPolygon = newPoly;
+            lobby.gameState.validPolygon = optimizeGeometry(newPoly); // Optimize result to keep state small
 
             // Hint Cities Logic (Server-side)
             // If distance <= 100km and hints not yet fetched, fetch them now.
