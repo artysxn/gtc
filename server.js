@@ -90,11 +90,12 @@ const lobbies = new Map();
 const INITIAL_GAME_STATE = {
     phase: 'LOBBY', // LOBBY, SETUP_LOC, SETUP_IMG, PLAYING, WON
     setterId: null,
-    target: { lat: null, lon: null, name: null, countryCode: null, continent: null },
+    target: { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null },
     image: null,
     guesses: [],
     validPolygon: null, // Starts as null, becomes world polygon on first guess
     hints: { hemisphere: false, continent: false, country: false },
+    hintLabels: { hemisphere: null, continent: null, country: null },
     winnerId: null,
     wrongCountries: [] // Array of country codes
 };
@@ -178,7 +179,8 @@ function broadcastState(lobbyId) {
             isHost: player.id === lobby.hostId,
             turnState: lobby.turnState,
             timeLeft: lobby.turnState.deadline ? Math.max(0, Math.ceil((lobby.turnState.deadline - Date.now()) / 1000)) : null,
-            guessCooldownUntil: (lobby.guessCooldownUntil && lobby.guessCooldownUntil[player.id]) ? lobby.guessCooldownUntil[player.id] : null
+            guessCooldownUntil: (lobby.guessCooldownUntil && lobby.guessCooldownUntil[player.id]) ? lobby.guessCooldownUntil[player.id] : null,
+            guessCooldownStarted: (lobby.guessCooldownStarted && lobby.guessCooldownStarted[player.id]) ? lobby.guessCooldownStarted[player.id] : null
         };
 
         socket.emit('game_state_update', sanitizedState);
@@ -311,14 +313,20 @@ async function processGuessQueue(lobbyId) {
                 advanceTurn(lobby);
             }
 
-            if (dist <= 5) {
-                console.log(`[submit_guess] WIN! Distance ${dist} <= 5km`);
+            // Win only on exact place match (same red square / OSM place_id)
+            const targetPlaceId = lobby.gameState.target.placeId;
+            const isExactMatch = (targetPlaceId != null && guess.place_id != null && String(guess.place_id) === String(targetPlaceId));
+            if (isExactMatch) {
+                console.log(`[submit_guess] WIN! Exact place match (place_id ${guess.place_id})`);
                 lobby.gameState.phase = 'WON';
                 lobby.gameState.winnerId = item.socketId;
                 lobby.gameState.setterId = item.socketId;
                 if (lobby.settings.gameMode === 'ffa') {
                     if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
-                    lobby.guessCooldownUntil[item.socketId] = Date.now() + 10000;
+                    if (!lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
+                    const until = Date.now() + 10000;
+                    lobby.guessCooldownUntil[item.socketId] = until;
+                    lobby.guessCooldownStarted[item.socketId] = Date.now();
                 }
                 lobby.guessQueue.shift();
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (win). Queue length now ${lobby.guessQueue.length}`);
@@ -337,6 +345,8 @@ async function processGuessQueue(lobbyId) {
             if (guessCount === thresholds[0] && !lobby.gameState.hints.hemisphere) {
                 lobby.gameState.hints.hemisphere = true;
                 const isNorth = lobby.gameState.target.lat >= 0;
+                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                lobby.gameState.hintLabels.hemisphere = isNorth ? 'Northern' : 'Southern';
                 const badHemisphere = isNorth ? turf.bboxPolygon([-180, -90, 180, 0]) : turf.bboxPolygon([-180, 0, 180, 90]);
                 try {
                     const diff = turf.difference(turf.featureCollection([newPoly, badHemisphere]));
@@ -346,11 +356,12 @@ async function processGuessQueue(lobbyId) {
 
             if (guessCount === thresholds[1] && !lobby.gameState.hints.continent && lobby.gameState.target.continent) {
                 lobby.gameState.hints.continent = true;
+                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
                 try {
                     const targetCountryCode = (lobby.gameState.target.countryCode || '').toUpperCase();
                     if (!targetCountryCode) throw new Error('Missing target country code for continent hint');
                     if (!REST_COUNTRIES_CACHE) {
-                        const restRes = await fetchWithTimeout('https://restcountries.com/v3.1/all', {
+                        const restRes = await fetchWithTimeout('https://restcountries.com/v3.1/all?fields=cca2,continents', {
                             headers: { 'User-Agent': 'GTC-Game/1.0' },
                             timeout: 15000
                         });
@@ -364,6 +375,7 @@ async function processGuessQueue(lobbyId) {
                         targetContinent = normalizeContinentForCountry(targetCountryCode, targetInfo.continents) || targetContinent;
                     }
                     if (!targetContinent) throw new Error('Unable to determine target continent');
+                    lobby.gameState.hintLabels.continent = targetContinent;
                     const targetContinentLower = targetContinent.toLowerCase();
                     const sameContinentCodes = allCountries
                         .map(c => {
@@ -400,6 +412,8 @@ async function processGuessQueue(lobbyId) {
 
             if (guessCount === thresholds[2] && !lobby.gameState.hints.country) {
                 lobby.gameState.hints.country = true;
+                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                lobby.gameState.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
                 const targetCountryCode = (lobby.gameState.target.countryCode || '').toUpperCase();
                 if (targetCountryCode) {
                     try {
@@ -434,6 +448,8 @@ async function processGuessQueue(lobbyId) {
                             if (intersect) newPoly = intersect;
                             else newPoly = countryFeat;
                             lobby.gameState.hints.country = true;
+                            if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                            lobby.gameState.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
                         }
                     }
                 } catch (e) { console.error("Country reveal error:", e); }
@@ -511,7 +527,10 @@ async function processGuessQueue(lobbyId) {
 
             if (lobby.settings.gameMode === 'ffa') {
                 if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
-                lobby.guessCooldownUntil[item.socketId] = Date.now() + (isSameCountry ? 10000 : 5000);
+                if (!lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
+                const duration = isSameCountry ? 10000 : 5000;
+                lobby.guessCooldownUntil[item.socketId] = Date.now() + duration;
+                lobby.guessCooldownStarted[item.socketId] = Date.now();
             }
             lobby.guessQueue.shift();
             console.log(`[guess_queue] Lobby ${lobbyId} dequeued (success). Queue length now ${lobby.guessQueue.length}`);
@@ -816,7 +835,9 @@ io.on('connection', (socket) => {
             lobby.gameState.target = { 
                 lat, lon, 
                 name: fullName, 
-                countryCode 
+                countryCode,
+                countryName: country || '',
+                placeId: geoData.place_id || null
             };
 
             // Fetch continent
@@ -861,15 +882,11 @@ io.on('connection', (socket) => {
         if (!lobby.guessQueue) lobby.guessQueue = [];
         if (lobby.guessQueueProcessing === undefined) lobby.guessQueueProcessing = false;
 
-        // FFA guess cooldown (server-side): block enqueue if still in cooldown
+        // FFA guess cooldown (server-side): block enqueue if still in cooldown (no toast; client shows button state)
         if (lobby.settings.gameMode === 'ffa') {
             if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
             const until = lobby.guessCooldownUntil[socket.id];
-            if (until && Date.now() < until) {
-                const sec = Math.ceil((until - Date.now()) / 1000);
-                socket.emit('error', `Please wait ${sec} second(s) before guessing again.`);
-                return;
-            }
+            if (until && Date.now() < until) return;
         }
 
         lobby.guessQueue.push({ socketId: socket.id, query });
@@ -920,8 +937,10 @@ io.on('connection', (socket) => {
             lobby.gameState.guesses = [];
             lobby.gameState.validPolygon = null;
             lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
+            lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
             if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
             if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
+            if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
             
             broadcastState(lobbyId);
         }
@@ -974,8 +993,11 @@ function handleDisconnect(socket, specificLobbyId = null) {
                     lobby.gameState.image = null;
                     lobby.gameState.guesses = [];
                     lobby.gameState.validPolygon = null;
+                    lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
+                    lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
                     if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
                     if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
+                    if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
                 }
                 broadcastState(lobbyId);
             }
@@ -1035,8 +1057,10 @@ setInterval(() => {
                         lobby.gameState.guesses = [];
                         lobby.gameState.validPolygon = null;
                         lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
+                        lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
                         if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
                         if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
+                        if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
                         lobby.setterAssignedAt = Date.now();
                         lobby.setterWarned = false;
                         
