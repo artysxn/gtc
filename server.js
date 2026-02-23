@@ -89,7 +89,7 @@ const lobbies = new Map();
 
 const INITIAL_GAME_STATE = {
     phase: 'LOBBY', // LOBBY, SETUP_LOC, SETUP_IMG, PLAYING, WON
-    setterId: null,
+    hiderId: null,
     target: { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null },
     image: null,
     guesses: [],
@@ -103,7 +103,7 @@ const INITIAL_GAME_STATE = {
     powerupVote: null,         // { options: [{ id, label, description }], endAt, votes: { [powerupId]: count }, votedBy: { [playerId]: powerupId } }
     powerupVoteTimer: null,    // setTimeout handle to clear
     snipingImmunityUntil: null,
-    snipingImmunityGuesserId: null,
+    snipingImmunitySeekerId: null,
     cityNameLetterCount: null,
     cityNameRevealedLetters: [], // [{ index, letter }]
     scanZoneBonusKm: 0,
@@ -112,7 +112,7 @@ const INITIAL_GAME_STATE = {
     radarPlacementRadiusKm: null, // 750 or custom
     radarPlacementEndAt: null,
     radarResultPolygon: null,
-    // Second image (stage 3): setter has 60s to upload, then warning, then penalty every 15s from 90s
+    // Second image (stage 3): hider has 60s to upload, then warning, then penalty every 15s from 90s
     secondImageUploadBy: null,    // timestamp: upload deadline (60s after stage 3 starts)
     secondImageUrl: null,         // /uploads/... when uploaded
     secondImageWarningShown: false,
@@ -125,7 +125,7 @@ const DEFAULT_SETTINGS = {
     password: null,
     gameMode: 'ffa', // 'ffa' or 'turn_based'
     moveTimeLimit: 0, // Seconds, 0 = off
-    hiderVictoryEnabled: true, // If true, setter wins when guess count reaches 1.25× country threshold
+    hiderVictoryEnabled: true, // If true, hider wins when guess count reaches 1.25× country threshold
     secondImageAtStage: 3 // 2, 3, or 4 — require second image when guess count reaches this stage's threshold
 };
 
@@ -149,16 +149,19 @@ const POWERUP_IDS = {
     REVEAL_COASTAL: 'reveal_coastal'
 };
 
+function isCountryRevealed(gs) {
+    return !!(gs.hintLabels && gs.hintLabels.country != null && gs.hintLabels.country !== '');
+}
 // Stage 1–4 pools: { id, label, description }. Condition: (gameState) => boolean to include in draw.
 const POWERUP_POOLS = [
     [ // Stage 1
-        { id: POWERUP_IDS.REMOVE_4_COUNTRIES, label: 'Remove 4 countries', description: '4 wrong countries grayed out.' },
+        { id: POWERUP_IDS.REMOVE_4_COUNTRIES, label: 'Remove 4 countries', description: '4 wrong countries grayed out.', condition: (gs) => !isCountryRevealed(gs) },
         { id: POWERUP_IDS.SCAN_ZONE_10, label: 'Scan +10 km', description: 'Search radius 260 km (was 250).' },
         { id: POWERUP_IDS.COOLDOWN_1, label: 'Cooldown -1 s', description: 'Guess cooldown reduced by 1 second.' },
-        { id: POWERUP_IDS.SNIPING_IMMUNITY, label: 'Sniping immunity', description: 'After country revealed by a guess, only that guesser can guess for 15 s.' }
+        { id: POWERUP_IDS.SNIPING_IMMUNITY, label: 'Sniping immunity', description: 'After country revealed by a guess, only that seeker can guess for 15 s.' }
     ],
     [ // Stage 2
-        { id: POWERUP_IDS.REMOVE_5_COUNTRIES, label: 'Remove 5 countries', description: '5 wrong countries grayed out.' },
+        { id: POWERUP_IDS.REMOVE_5_COUNTRIES, label: 'Remove 5 countries', description: '5 wrong countries grayed out.', condition: (gs) => !isCountryRevealed(gs) },
         { id: POWERUP_IDS.SCAN_ZONE_15, label: 'Scan +15 km', description: 'Search radius +15 km. Stacks.' },
         { id: POWERUP_IDS.COOLDOWN_1, label: 'Cooldown -1 s', description: 'Stacks.' },
         { id: POWERUP_IDS.RADAR_750, label: '1× 750 km radar', description: 'Random player places a pin; 750 km scan for all.' },
@@ -271,18 +274,18 @@ async function applyPowerup(lobbyId, powerupId, stageIndex) {
         }
     }
     else if (powerupId === POWERUP_IDS.RADAR_750) {
-        const guessers = lobby.players.filter(p => p.id !== gs.setterId);
-        if (guessers.length > 0) {
-            const pick = guessers[Math.floor(Math.random() * guessers.length)];
+        const seekers = lobby.players.filter(p => p.id !== gs.hiderId);
+        if (seekers.length > 0) {
+            const pick = seekers[Math.floor(Math.random() * seekers.length)];
             gs.radarPlacementPlayerId = pick.id;
             gs.radarPlacementRadiusKm = 750;
             gs.radarPlacementEndAt = Date.now() + 10000;
         }
     }
     else if (powerupId === POWERUP_IDS.RADAR_CUSTOM) {
-        const guessers = lobby.players.filter(p => p.id !== gs.setterId);
-        if (guessers.length > 0) {
-            const pick = guessers[Math.floor(Math.random() * guessers.length)];
+        const seekers = lobby.players.filter(p => p.id !== gs.hiderId);
+        if (seekers.length > 0) {
+            const pick = seekers[Math.floor(Math.random() * seekers.length)];
             gs.radarPlacementPlayerId = pick.id;
             gs.radarPlacementRadiusKm = null;
             gs.radarPlacementEndAt = Date.now() + 15000;
@@ -370,11 +373,11 @@ function broadcastState(lobbyId) {
 
     // Sync player roles and ensure stats exist
     lobby.players.forEach(p => {
-        p.role = (p.id === lobby.gameState.setterId) ? 'setter' : 'guesser';
+        p.role = (p.id === lobby.gameState.hiderId) ? 'hider' : 'seeker';
         ensurePlayerStats(p);
     });
 
-    // Sanitize state for guessers (hide target unless WON or they are setter)
+    // Sanitize state for seekers (hide target unless WON or they are hider)
     const fullState = lobby.gameState;
     
     // We send different views to different players
@@ -382,14 +385,14 @@ function broadcastState(lobbyId) {
         const socket = io.sockets.sockets.get(player.id);
         if (!socket) return;
 
-        const isSetter = player.id === fullState.setterId;
+        const isHider = player.id === fullState.hiderId;
         const isWon = fullState.phase === 'WON' || fullState.phase === 'HIDER_WON';
 
         const sanitizedState = {
             ...fullState,
-            target: (isSetter || isWon) ? fullState.target : { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null },
+            target: (isHider || isWon) ? fullState.target : { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null },
             players: lobby.players,
-            myRole: isSetter ? 'setter' : 'guesser',
+            myRole: isHider ? 'hider' : 'seeker',
             settings: lobby.settings,
             isHost: player.id === lobby.hostId,
             turnState: lobby.turnState,
@@ -400,7 +403,7 @@ function broadcastState(lobbyId) {
             powerupStage: fullState.powerupStage,
             activePowerups: fullState.activePowerups || [],
             snipingImmunityUntil: fullState.snipingImmunityUntil,
-            snipingImmunityGuesserId: fullState.snipingImmunityGuesserId,
+            snipingImmunitySeekerId: fullState.snipingImmunitySeekerId,
             cityNameLetterCount: fullState.cityNameLetterCount,
             cityNameRevealedLetters: fullState.cityNameRevealedLetters || [],
             scanZoneBonusKm: fullState.scanZoneBonusKm || 0,
@@ -418,8 +421,8 @@ function broadcastState(lobbyId) {
 }
 
 function ensurePlayerStats(player) {
-    if (player.winsAsSetter == null) player.winsAsSetter = 0;
-    if (player.winsAsGuesser == null) player.winsAsGuesser = 0;
+    if (player.winsAsHider == null) player.winsAsHider = 0;
+    if (player.winsAsSeeker == null) player.winsAsSeeker = 0;
     if (player.totalGuesses == null) player.totalGuesses = 0;
     if (player.roundsPlayed == null) player.roundsPlayed = 0;
 }
@@ -431,27 +434,27 @@ function updateRoundStats(lobby, winType, winnerId) {
         p.roundsPlayed = (p.roundsPlayed || 0) + 1;
         const thisRoundGuesses = guesses.filter(g => g.socketId === p.id).length;
         p.totalGuesses = (p.totalGuesses || 0) + thisRoundGuesses;
-        if (winType === 'guesser' && p.id === winnerId) p.winsAsGuesser = (p.winsAsGuesser || 0) + 1;
-        if (winType === 'hider' && p.id === lobby.gameState.setterId) p.winsAsSetter = (p.winsAsSetter || 0) + 1;
+        if (winType === 'seeker' && p.id === winnerId) p.winsAsSeeker = (p.winsAsSeeker || 0) + 1;
+        if (winType === 'hider' && p.id === lobby.gameState.hiderId) p.winsAsHider = (p.winsAsHider || 0) + 1;
     });
 }
 
 function advanceTurn(lobby) {
     if (lobby.settings.gameMode !== 'turn_based') return;
 
-    const guessers = lobby.players.filter(p => p.role === 'guesser');
-    if (guessers.length === 0) {
-        lobby.turnState = { currentGuesserId: null, deadline: null };
+    const seekers = lobby.players.filter(p => p.role === 'seeker');
+    if (seekers.length === 0) {
+        lobby.turnState = { currentSeekerId: null, deadline: null };
         return;
     }
 
-    let currentIndex = guessers.findIndex(p => p.id === lobby.turnState.currentGuesserId);
-    let nextIndex = (currentIndex + 1) % guessers.length;
+    let currentIndex = seekers.findIndex(p => p.id === lobby.turnState.currentSeekerId);
+    let nextIndex = (currentIndex + 1) % seekers.length;
     
     // If current is invalid (e.g. left), start from 0
     if (currentIndex === -1) nextIndex = 0;
 
-    lobby.turnState.currentGuesserId = guessers[nextIndex].id;
+    lobby.turnState.currentSeekerId = seekers[nextIndex].id;
     
     if (lobby.settings.moveTimeLimit > 0) {
         lobby.turnState.deadline = Date.now() + (lobby.settings.moveTimeLimit * 1000);
@@ -589,8 +592,8 @@ async function processGuessQueue(lobbyId) {
                 console.log(`[submit_guess] WIN! Exact place match (place_id ${guess.place_id})`);
                 lobby.gameState.phase = 'WON';
                 lobby.gameState.winnerId = item.socketId;
-                lobby.gameState.setterId = item.socketId;
-                updateRoundStats(lobby, 'guesser', item.socketId);
+                lobby.gameState.hiderId = item.socketId;
+                updateRoundStats(lobby, 'seeker', item.socketId);
                 if (lobby.settings.gameMode === 'ffa') {
                     if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                     if (!lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
@@ -606,15 +609,15 @@ async function processGuessQueue(lobbyId) {
                 break;
             }
 
-            // Hider victory: setter wins if guess count reaches 1.25× country threshold
+            // Hider victory: hider wins if guess count reaches 1.25× country threshold
             const guessCount = lobby.gameState.guesses.length;
             const hiderWinThreshold = Math.round(1.25 * countryThreshold);
             if (lobby.settings.hiderVictoryEnabled && guessCount >= hiderWinThreshold) {
                 console.log(`[guess_queue] PROCESSED (hider win): socket=${item.socketId} guessCount=${guessCount}`);
                 console.log(`[submit_guess] HIDER WINS! Survived ${guessCount} guesses (threshold ${hiderWinThreshold})`);
                 lobby.gameState.phase = 'HIDER_WON';
-                lobby.gameState.winnerId = lobby.gameState.setterId; // setter won
-                updateRoundStats(lobby, 'hider', lobby.gameState.setterId);
+                lobby.gameState.winnerId = lobby.gameState.hiderId; // hider won
+                updateRoundStats(lobby, 'hider', lobby.gameState.hiderId);
                 lobby.guessQueue.shift();
                 broadcastState(lobbyId);
                 done = true;
@@ -653,7 +656,7 @@ async function processGuessQueue(lobbyId) {
                             if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null };
                             gs.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
                             if (gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.SNIPING_IMMUNITY)) {
-                                gs.snipingImmunityGuesserId = item.socketId;
+                                gs.snipingImmunitySeekerId = item.socketId;
                                 gs.snipingImmunityUntil = Date.now() + 15000;
                             }
                         }
@@ -799,8 +802,8 @@ app.post('/upload', upload.single('image'), (req, res) => {
         return res.status(400).json({ error: 'Invalid upload' });
     }
 
-    // Only setter can upload
-    if (lobby.gameState.setterId !== req.body.socketId) {
+    // Only hider can upload
+    if (lobby.gameState.hiderId !== req.body.socketId) {
         // Cleanup file if unauthorized
         fs.unlinkSync(req.file.path);
         return res.status(403).json({ error: 'Not authorized' });
@@ -831,7 +834,7 @@ app.post('/upload_second', upload.single('image'), (req, res) => {
         if (req.file) fs.unlinkSync(req.file.path);
         return res.status(400).json({ error: 'Invalid upload' });
     }
-    if (lobby.gameState.setterId !== socketId) {
+    if (lobby.gameState.hiderId !== socketId) {
         fs.unlinkSync(req.file.path);
         return res.status(403).json({ error: 'Not authorized' });
     }
@@ -868,17 +871,17 @@ io.on('connection', (socket) => {
         else finalSettings.secondImageAtStage = 3;
 
         lobbies.set(lobbyId, {
-            players: [{ id: socket.id, nickname, role: 'setter', score: 0, winsAsSetter: 0, winsAsGuesser: 0, totalGuesses: 0, roundsPlayed: 0 }],
+            players: [{ id: socket.id, nickname, role: 'hider', score: 0, winsAsHider: 0, winsAsSeeker: 0, totalGuesses: 0, roundsPlayed: 0 }],
             gameState: JSON.parse(JSON.stringify(INITIAL_GAME_STATE)),
             settings: finalSettings,
             hostId: socket.id,
             password: finalSettings.password,
             lastInteraction: Date.now(),
-            setterAssignedAt: Date.now(),
-            setterWarned: false,
+            hiderAssignedAt: Date.now(),
+            hiderWarned: false,
             inactivityStrikes: 0,
             turnState: {
-                currentGuesserId: null,
+                currentSeekerId: null,
                 deadline: null
             },
             guessQueue: [],
@@ -888,9 +891,9 @@ io.on('connection', (socket) => {
         socket.join(lobbyId);
         socket.emit('lobby_created', { lobbyId });
         
-        // Auto-assign setter for fresh lobby
+        // Auto-assign hider for fresh lobby
         const lobby = lobbies.get(lobbyId);
-        lobby.gameState.setterId = socket.id;
+        lobby.gameState.hiderId = socket.id;
         
         broadcastState(lobbyId);
     });
@@ -914,7 +917,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        lobby.players.push({ id: socket.id, nickname, role: 'guesser', score: 0, winsAsSetter: 0, winsAsGuesser: 0, totalGuesses: 0, roundsPlayed: 0 });
+        lobby.players.push({ id: socket.id, nickname, role: 'seeker', score: 0, winsAsHider: 0, winsAsSeeker: 0, totalGuesses: 0, roundsPlayed: 0 });
         socket.join(lobbyId);
         
         broadcastState(lobbyId);
@@ -951,22 +954,22 @@ io.on('connection', (socket) => {
 
         lobby.lastInteraction = Date.now();
 
-        // Capture the winner (who is now the setter) BEFORE resetting state
-        const nextSetterId = lobby.gameState.setterId;
+        // Capture the winner (who is now the hider) BEFORE resetting state
+        const nextHiderId = lobby.gameState.hiderId;
 
         // Reset state
         lobby.gameState = JSON.parse(JSON.stringify(INITIAL_GAME_STATE));
         lobby.gameState.phase = 'SETUP_LOC';
-        lobby.setterAssignedAt = Date.now();
-        lobby.setterWarned = false;
+        lobby.hiderAssignedAt = Date.now();
+        lobby.hiderWarned = false;
         
-        // Restore the setter
-        if (nextSetterId) {
-            lobby.gameState.setterId = nextSetterId;
+        // Restore the hider
+        if (nextHiderId) {
+            lobby.gameState.hiderId = nextHiderId;
         } else {
-            // Pick random setter if no previous setter (first game)
+            // Pick random hider if no previous hider (first game)
             const randomPlayer = lobby.players[Math.floor(Math.random() * lobby.players.length)];
-            lobby.gameState.setterId = randomPlayer.id;
+            lobby.gameState.hiderId = randomPlayer.id;
         }
 
         broadcastState(lobbyId);
@@ -984,7 +987,7 @@ io.on('connection', (socket) => {
         const chatMsg = {
             nickname: player.nickname,
             message: message.substring(0, 200), // Limit length
-            role: player.role, // 'setter' or 'guesser'
+            role: player.role, // 'hider' or 'seeker'
             senderId: socket.id,
             timestamp: Date.now()
         };
@@ -1002,9 +1005,9 @@ io.on('connection', (socket) => {
             return;
         }
         
-        if (lobby.gameState.setterId !== socket.id) {
-            console.error(`[set_target] Failed: User ${socket.id} is not setter. Actual setter: ${lobby.gameState.setterId}`);
-            socket.emit('game_error', { code: 'NOT_SETTER', message: 'You are not the setter for this round.' });
+        if (lobby.gameState.hiderId !== socket.id) {
+            console.error(`[set_target] Failed: User ${socket.id} is not hider. Actual hider: ${lobby.gameState.hiderId}`);
+            socket.emit('game_error', { code: 'NOT_HIDER', message: 'You are not the hider for this round.' });
             return;
         }
 
@@ -1124,8 +1127,8 @@ io.on('connection', (socket) => {
 
             lobby.gameState.phase = 'SETUP_IMG';
             lobby.lastInteraction = Date.now();
-            lobby.setterAssignedAt = Date.now(); // Reset for image upload phase
-            lobby.setterWarned = false;
+            lobby.hiderAssignedAt = Date.now(); // Reset for image upload phase
+            lobby.hiderWarned = false;
             
             broadcastState(lobbyId);
 
@@ -1138,7 +1141,7 @@ io.on('connection', (socket) => {
     socket.on('submit_guess', ({ lobbyId, query }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby || lobby.gameState.phase !== 'PLAYING') return;
-        if (lobby.gameState.setterId === socket.id) return;
+        if (lobby.gameState.hiderId === socket.id) return;
 
         if (lobby.gameState.powerupVote) {
             socket.emit('error', 'Vote for a powerup first!');
@@ -1149,14 +1152,14 @@ io.on('connection', (socket) => {
             return;
         }
         if (lobby.gameState.snipingImmunityUntil && Date.now() < lobby.gameState.snipingImmunityUntil) {
-            if (lobby.gameState.snipingImmunityGuesserId !== socket.id) {
+            if (lobby.gameState.snipingImmunitySeekerId !== socket.id) {
                 socket.emit('error', 'Only the player who revealed the country can guess for 15 seconds!');
                 return;
             }
         }
 
         if (lobby.settings.gameMode === 'turn_based') {
-            if (lobby.turnState.currentGuesserId !== socket.id) {
+            if (lobby.turnState.currentSeekerId !== socket.id) {
                 socket.emit('error', 'Not your turn!');
                 return;
             }
@@ -1198,7 +1201,7 @@ io.on('connection', (socket) => {
     socket.on('vote_powerup', ({ lobbyId, powerupId }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby || lobby.gameState.phase !== 'PLAYING' || !lobby.gameState.powerupVote) return;
-        if (lobby.gameState.setterId === socket.id) return;
+        if (lobby.gameState.hiderId === socket.id) return;
         const vote = lobby.gameState.powerupVote;
         const opt = vote.options.find(o => o.id === powerupId);
         if (!opt) return;
@@ -1208,6 +1211,13 @@ io.on('connection', (socket) => {
         vote.votes[powerupId] = (vote.votes[powerupId] || 0) + 1;
         vote.votedBy[socket.id] = powerupId;
         broadcastState(lobbyId);
+        const seekers = lobby.players.filter(p => p.id !== lobby.gameState.hiderId);
+        const allVoted = seekers.length > 0 && seekers.every(g => vote.votedBy[g.id] !== undefined);
+        if (allVoted && lobby.powerupVoteTimer) {
+            clearTimeout(lobby.powerupVoteTimer);
+            lobby.powerupVoteTimer = null;
+            finishPowerupVote(lobbyId);
+        }
     });
 
     socket.on('place_radar', ({ lobbyId, lat, lon, radiusKm }) => {
@@ -1234,7 +1244,7 @@ io.on('connection', (socket) => {
 
     socket.on('give_up_role', ({ lobbyId, targetUserId }) => {
         const lobby = lobbies.get(lobbyId);
-        if (!lobby || lobby.gameState.setterId !== socket.id) return;
+        if (!lobby || lobby.gameState.hiderId !== socket.id) return;
 
         // Restriction: Cannot give up role if game is PLAYING (or SETUP_IMG if we want to be strict, but user said "game is live")
         // "Game is live" usually means PLAYING phase where guesses are happening.
@@ -1243,27 +1253,27 @@ io.on('connection', (socket) => {
              return;
         }
 
-        let nextSetterId = null;
+        let nextHiderId = null;
 
         if (targetUserId) {
             // Validate target user exists in lobby
             const targetUser = lobby.players.find(p => p.id === targetUserId);
             if (targetUser && targetUser.id !== socket.id) {
-                nextSetterId = targetUser.id;
+                nextHiderId = targetUser.id;
             }
         }
 
         // If no specific target or target invalid, pick random
-        if (!nextSetterId) {
+        if (!nextHiderId) {
             const otherPlayers = lobby.players.filter(p => p.id !== socket.id);
             if (otherPlayers.length > 0) {
-                const nextSetter = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
-                nextSetterId = nextSetter.id;
+                const nextHider = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
+                nextHiderId = nextHider.id;
             }
         }
 
-        if (nextSetterId) {
-            lobby.gameState.setterId = nextSetterId;
+        if (nextHiderId) {
+            lobby.gameState.hiderId = nextHiderId;
             
             // Reset round
             lobby.gameState.phase = 'SETUP_LOC';
@@ -1280,7 +1290,7 @@ io.on('connection', (socket) => {
             lobby.gameState.secondImageWarningShown = false;
             lobby.gameState.secondImageLastPenaltyAt = null;
             lobby.gameState.snipingImmunityUntil = null;
-            lobby.gameState.snipingImmunityGuesserId = null;
+            lobby.gameState.snipingImmunitySeekerId = null;
             lobby.gameState.cityNameLetterCount = null;
             lobby.gameState.cityNameRevealedLetters = [];
             lobby.gameState.scanZoneBonusKm = 0;
@@ -1300,9 +1310,9 @@ io.on('connection', (socket) => {
 
     socket.on('i_am_here', ({ lobbyId }) => {
         const lobby = lobbies.get(lobbyId);
-        if (lobby && lobby.gameState.setterId === socket.id) {
-            lobby.setterAssignedAt = Date.now();
-            lobby.setterWarned = false;
+        if (lobby && lobby.gameState.hiderId === socket.id) {
+            lobby.hiderAssignedAt = Date.now();
+            lobby.hiderWarned = false;
         }
     });
 
@@ -1322,7 +1332,7 @@ function handleDisconnect(socket, specificLobbyId = null) {
 
         const index = lobby.players.findIndex(p => p.id === socket.id);
         if (index !== -1) {
-            const wasSetter = lobby.gameState.setterId === socket.id;
+            const wasSetter = lobby.gameState.hiderId === socket.id;
             const wasHost = lobby.hostId === socket.id;
             
             lobby.players.splice(index, 1);
@@ -1337,7 +1347,7 @@ function handleDisconnect(socket, specificLobbyId = null) {
                 }
 
                 if (wasSetter) {
-                    lobby.gameState.setterId = lobby.players[0].id;
+                    lobby.gameState.hiderId = lobby.players[0].id;
                     lobby.gameState.phase = 'SETUP_LOC';
                     lobby.gameState.target = { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null };
                     lobby.gameState.image = null;
@@ -1397,8 +1407,8 @@ setInterval(() => {
         if (lobby.gameState.phase === 'PLAYING' && gs.secondImageUploadBy && !gs.secondImageUrl) {
             if (now >= gs.secondImageUploadBy && !gs.secondImageWarningShown) {
                 gs.secondImageWarningShown = true;
-                const setterSocket = io.sockets.sockets.get(gs.setterId);
-                if (setterSocket) setterSocket.emit('second_image_warning', { message: 'Upload second image in 30s or 1 random country will be removed every 15s.' });
+                const hiderSocket = io.sockets.sockets.get(gs.hiderId);
+                if (hiderSocket) hiderSocket.emit('second_image_warning', { message: 'Upload second image in 30s or 1 random country will be removed every 15s.' });
             }
             if (now >= gs.secondImageUploadBy + 30000) {
                 const lastPenalty = gs.secondImageLastPenaltyAt || 0;
@@ -1430,8 +1440,8 @@ setInterval(() => {
                                     }
                                 }
                             } catch (e) { console.warn('Second image penalty country mask failed', code, e); }
-                            const setterSocket = io.sockets.sockets.get(gs.setterId);
-                            if (setterSocket) setterSocket.emit('second_image_penalty', { message: '1 random country was removed (second image not uploaded).' });
+                            const hiderSocket = io.sockets.sockets.get(gs.hiderId);
+                            if (hiderSocket) hiderSocket.emit('second_image_penalty', { message: '1 random country was removed (second image not uploaded).' });
                             broadcastState(lobbyId);
                         }
                     })();
@@ -1439,14 +1449,14 @@ setInterval(() => {
             }
         }
 
-        // 3. Setter Inactivity
+        // 3. Hider Inactivity
         if (lobby.gameState.phase === 'SETUP_LOC' || lobby.gameState.phase === 'SETUP_IMG') {
-            const timeSinceSet = now - lobby.setterAssignedAt;
+            const timeSinceSet = now - lobby.hiderAssignedAt;
             
             // Warning at 3 mins
-            if (timeSinceSet > 3 * 60 * 1000 && !lobby.setterWarned) {
-                lobby.setterWarned = true;
-                const socket = io.sockets.sockets.get(lobby.gameState.setterId);
+            if (timeSinceSet > 3 * 60 * 1000 && !lobby.hiderWarned) {
+                lobby.hiderWarned = true;
+                const socket = io.sockets.sockets.get(lobby.gameState.hiderId);
                 if (socket) socket.emit('check_activity');
             }
 
@@ -1458,11 +1468,11 @@ setInterval(() => {
                     io.to(lobbyId).emit('game_error', { code: 'LOBBY_CLOSED', message: 'Lobby closed due to repeated inactivity.' });
                 } else {
                     // Force give up role
-                    // Find new setter
-                    const otherPlayers = lobby.players.filter(p => p.id !== lobby.gameState.setterId);
+                    // Find new hider
+                    const otherPlayers = lobby.players.filter(p => p.id !== lobby.gameState.hiderId);
                     if (otherPlayers.length > 0) {
-                        const nextSetter = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
-                        lobby.gameState.setterId = nextSetter.id;
+                        const nextHider = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
+                        lobby.gameState.hiderId = nextHider.id;
                         lobby.gameState.phase = 'SETUP_LOC';
                         lobby.gameState.target = { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null };
                         lobby.gameState.image = null;
@@ -1480,10 +1490,10 @@ setInterval(() => {
                         if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
                         if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                         if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
-                        lobby.setterAssignedAt = Date.now();
-                        lobby.setterWarned = false;
+                        lobby.hiderAssignedAt = Date.now();
+                        lobby.hiderWarned = false;
                         
-                        io.to(lobbyId).emit('error', 'Setter was inactive. Role passed.');
+                        io.to(lobbyId).emit('error', 'Hider was inactive. Role passed.');
                         broadcastState(lobbyId);
                     } else {
                         // No one else? Close it.

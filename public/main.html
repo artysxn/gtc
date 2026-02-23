@@ -76,6 +76,11 @@
         .leaflet-popup-tip { display: none; }
         .leaflet-control-zoom { border: 3px solid #000 !important; box-shadow: 3px 3px 0 0 #000 !important; overflow: hidden; }
         .leaflet-control-zoom a { border: none !important; font-family: 'Play', sans-serif; font-weight: bold; }
+        /* Remove red dotted focus outline from markers and pinpoints */
+        .leaflet-marker-icon:focus,
+        .leaflet-interactive:focus,
+        .leaflet-marker-pane *:focus,
+        .custom-div-icon:focus { outline: none !important; box-shadow: none !important; }
 
         /* Patch notes markdown */
         .patch-notes-body h1 { font-size: 1rem; font-weight: 700; margin: 0 0 0.5rem 0; }
@@ -131,7 +136,7 @@
             
             <div class="grid md:grid-cols-2 gap-8">
                 <div>
-                    <h3 class="text-xl font-bold mb-2 bg-[#fbbf24] inline-block px-2 border-2 border-black">The Setter</h3>
+                    <h3 class="text-xl font-bold mb-2 bg-[#fbbf24] inline-block px-2 border-2 border-black">The Hider</h3>
                     <ul class="list-disc list-inside space-y-2 text-sm font-medium">
                         <li>Choose a secret location on the map.</li>
                         <li>Must be a city/town with <strong>>5k population</strong>.</li>
@@ -141,7 +146,7 @@
                     </ul>
                 </div>
                 <div>
-                    <h3 class="text-xl font-bold mb-2 bg-[#3b82f6] text-white inline-block px-2 border-2 border-black">The Guessers</h3>
+                    <h3 class="text-xl font-bold mb-2 bg-[#3b82f6] text-white inline-block px-2 border-2 border-black">The Seekers</h3>
                     <ul class="list-disc list-inside space-y-2 text-sm font-medium">
                         <li>Examine the photo and search the map.</li>
                         <li>Click or type to guess a location.</li>
@@ -233,7 +238,7 @@
                     </div>
                     <div class="flex items-center gap-2">
                         <input type="checkbox" id="setting-hider-victory" class="w-4 h-4" checked>
-                        <label for="setting-hider-victory" class="font-bold">Hider victory (setter wins at 1.25× country threshold)</label>
+                        <label for="setting-hider-victory" class="font-bold">Hider victory (hider wins at 1.25× country threshold)</label>
                     </div>
                     <div>
                         <label class="block font-bold mb-1">Second image required at</label>
@@ -301,7 +306,7 @@
     <div id="handover-modal" class="fixed inset-0 z-[20000] hidden flex items-center justify-center bg-black/80 p-4 opacity-0 transition-opacity duration-300">
         <div class="bg-white p-6 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-sm w-full text-center" onclick="event.stopPropagation()">
             <h2 class="text-2xl font-black mb-4">Give Up Role</h2>
-            <p class="text-gray-600 mb-4">Who should be the next setter?</p>
+            <p class="text-gray-600 mb-4">Who should be the next hider?</p>
             
             <div id="handover-list" class="flex flex-col gap-2 mb-4 max-h-60 overflow-y-auto">
                 <!-- Player buttons injected here -->
@@ -353,7 +358,7 @@
     </div>
 
     <!-- UI Panel - Neo brutal -->
-    <aside class="w-full md:w-[400px] h-1/2 md:h-full bg-white border-r-4 border-black shadow-[6px_0_0_0_#000] z-[1000] flex flex-col relative order-2 md:order-1 transition-all duration-300">
+    <aside class="w-full md:w-[400px] h-1/2 md:h-full min-h-0 flex flex-col bg-white border-r-4 border-black shadow-[6px_0_0_0_#000] z-[1000] relative order-2 md:order-1 transition-all duration-300">
         <header class="p-4 border-b-4 border-black bg-[#fbbf24] flex items-center justify-between shrink-0">
             <div class="flex items-center gap-2 text-black font-bold text-xl">
                 <i data-lucide="map-pin"></i>
@@ -366,7 +371,7 @@
             </div>
         </header>
 
-        <div id="ui-content" class="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-white">
+        <div id="ui-content" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-4 bg-white">
             <!-- Content injected by JS -->
         </div>
     </aside>
@@ -405,7 +410,7 @@
         const socket = io();
         let myLobbyId = null;
         let myNickname = null;
-        let myRole = 'guesser'; // 'setter' or 'guesser'
+        let myRole = 'seeker'; // 'hider' or 'seeker'
         let isProcessing = false;
         let guessQueue = []; // Queue for guesses
         let tempGuessMarker = null; // Visual feedback for click
@@ -426,7 +431,7 @@
             hintCitiesFetched: false,
             players: [],
             settings: {},
-            turnState: { currentGuesserId: null, deadline: null },
+            turnState: { currentSeekerId: null, deadline: null },
             timeLeft: null,
             guessCooldownUntil: null,
             guessCooldownStarted: null,
@@ -435,7 +440,7 @@
             powerupStage: 0,
             activePowerups: [],
             snipingImmunityUntil: null,
-            snipingImmunityGuesserId: null,
+            snipingImmunitySeekerId: null,
             cityNameLetterCount: null,
             cityNameRevealedLetters: [],
             scanZoneBonusKm: 0,
@@ -454,6 +459,7 @@
         let redCirclesLayer = L.layerGroup();
         let maskLayers = L.layerGroup();
         let hintMarkersLayer = L.layerGroup();
+        let hiderEligibleLayer = L.layerGroup(); // Red squares for hider during SETUP_LOC (click to select)
         let radarResultLayer = L.layerGroup();
 
         // --- Initialization ---
@@ -524,7 +530,7 @@
                 isProcessing = false; // Reset loading state on update
                 if (wasProcessing && lastGuessEmittedAt != null) {
                     const elapsed = Date.now() - lastGuessEmittedAt;
-                    if (elapsed >= 3000) {
+                    if (elapsed >= 10000) {
                         console.warn(`[guess] Guess took ${(elapsed / 1000).toFixed(1)}s to register. Possible causes: server queue backlog (other guesses ahead), Nominatim/API slow or timeout, network latency, or server processing (powerup/mask).`);
                     }
                     lastGuessEmittedAt = null;
@@ -545,7 +551,7 @@
                 if (newState.powerupStage !== undefined) state.powerupStage = newState.powerupStage;
                 if (newState.activePowerups) state.activePowerups = newState.activePowerups;
                 if (newState.snipingImmunityUntil !== undefined) state.snipingImmunityUntil = newState.snipingImmunityUntil;
-                if (newState.snipingImmunityGuesserId !== undefined) state.snipingImmunityGuesserId = newState.snipingImmunityGuesserId;
+                if (newState.snipingImmunitySeekerId !== undefined) state.snipingImmunitySeekerId = newState.snipingImmunitySeekerId;
                 if (newState.cityNameLetterCount !== undefined) state.cityNameLetterCount = newState.cityNameLetterCount;
                 if (newState.cityNameRevealedLetters) state.cityNameRevealedLetters = newState.cityNameRevealedLetters;
                 if (newState.scanZoneBonusKm !== undefined) state.scanZoneBonusKm = newState.scanZoneBonusKm;
@@ -625,7 +631,7 @@
                 // Color Logic
                 let colorClass = 'text-purple-600'; // Default Neutral
                 if (state.phase !== GameState.LOBBY && state.phase !== GameState.WON && state.phase !== GameState.HIDER_WON) {
-                    if (msg.role === 'setter') colorClass = 'text-red-600';
+                    if (msg.role === 'hider') colorClass = 'text-red-600';
                     else colorClass = 'text-blue-600';
                 }
                 
@@ -670,8 +676,8 @@
             list.innerHTML = `
                 <div class="text-xs font-bold text-gray-600 mb-2 uppercase tracking-wider">Scoreboard (this lobby)</div>
                 ${state.players.map(p => {
-                    const winsHider = p.winsAsSetter ?? 0;
-                    const winsGuesser = p.winsAsGuesser ?? 0;
+                    const winsHider = p.winsAsHider ?? 0;
+                    const winsGuesser = p.winsAsSeeker ?? 0;
                     const rounds = Math.max(1, p.roundsPlayed ?? 0);
                     const totalWins = winsHider + winsGuesser;
                     const pctHider = rounds > 0 ? ((winsHider / rounds) * 100).toFixed(0) : '0';
@@ -682,11 +688,11 @@
                 <div class="bg-[#f5f5f0] p-3 border-2 border-black">
                     <div class="flex justify-between items-center mb-2">
                         <span class="font-bold ${p.id === socket.id ? 'text-green-600' : ''}">${p.nickname} ${p.id === socket.id ? '(You)' : ''}</span>
-                        ${p.role === 'setter' ? '<span class="bg-red-500 text-white text-[10px] px-1 border border-black">SETTER</span>' : ''}
+                        ${p.role === 'hider' ? '<span class="bg-red-500 text-white text-[10px] px-1 border border-black">HIDER</span>' : ''}
                     </div>
                     <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] font-bold">
                         <span>Hider wins:</span><span>${winsHider} (${pctHider}%)</span>
-                        <span>Guesser wins:</span><span>${winsGuesser} (${pctGuesser}%)</span>
+                        <span>Seeker wins:</span><span>${winsGuesser} (${pctGuesser}%)</span>
                         <span>Total wins:</span><span>${totalWins}</span>
                         <span>This round:</span><span>${thisRound}</span>
                         <span>Total guesses:</span><span>${totalG}</span>
@@ -913,7 +919,9 @@
                 redrawUnifiedMasks();
             }
 
-            // Draw Hints
+            // Clear hider red squares when leaving SETUP_LOC
+            if (state.phase !== GameState.SETUP_LOC) hiderEligibleLayer.clearLayers();
+            // Draw Hints (seekers during PLAYING)
             if (state.hintCities) {
                 updateHintMarkers();
             } else {
@@ -930,7 +938,7 @@
             }
 
             // Draw Target (if allowed)
-            if (state.target.lat && (state.phase === GameState.WON || state.phase === GameState.HIDER_WON || myRole === 'setter')) {
+            if (state.target.lat && (state.phase === GameState.WON || state.phase === GameState.HIDER_WON || myRole === 'hider')) {
                 const icon = L.divIcon({
                     className: 'custom-div-icon',
                     html: `<div style="background-color: #22c55e; width: 24px; height: 24px; border: 3px solid #000; box-shadow: 3px 3px 0 0 #000;"></div>`,
@@ -981,10 +989,21 @@
             redCirclesLayer.addTo(map);
             maskLayers.addTo(map);
             hintMarkersLayer.addTo(map);
+            hiderEligibleLayer.addTo(map);
             radarResultLayer.addTo(map);
 
             map.on('click', handleMapClick);
             map.on('zoomend', updateHintMarkers);
+            let hiderEligibleDebounce = null;
+            map.on('moveend', () => {
+                if (myRole !== 'hider' || state.phase !== GameState.SETUP_LOC || map.getZoom() < 10) return;
+                if (hiderEligibleDebounce) clearTimeout(hiderEligibleDebounce);
+                hiderEligibleDebounce = setTimeout(() => {
+                    hiderEligibleDebounce = null;
+                    const c = map.getCenter();
+                    fetchHiderEligibleCities(c.lat, c.lng);
+                }, 500);
+            });
 
             const resizeObserver = new ResizeObserver(() => map.invalidateSize());
             resizeObserver.observe(document.getElementById('map'));
@@ -1031,32 +1050,71 @@
             return closest;
         }
 
+        async function fetchHiderEligibleCities(centerLat, centerLon) {
+            const minPop = (state.settings && state.settings.minPop) ? state.settings.minPop : 5000;
+            hiderEligibleLayer.clearLayers();
+            const query = `
+                [out:json][timeout:15];
+                (
+                  node["place"~"city|town"](around:20000,${centerLat},${centerLon});
+                  way["place"~"city|town"](around:20000,${centerLat},${centerLon});
+                  relation["place"~"city|town"](around:20000,${centerLat},${centerLon});
+                );
+                out center tags;
+            `;
+            try {
+                const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: query });
+                const data = await res.json();
+                const validPlaces = (data.elements || []).filter(n => {
+                    const popStr = (n.tags && n.tags.population) ? String(n.tags.population).replace(/,/g, '') : '0';
+                    return parseInt(popStr, 10) >= minPop;
+                });
+                for (const place of validPlaces) {
+                    const pLat = place.lat || (place.center && place.center.lat);
+                    const pLon = place.lon || (place.center && place.center.lon);
+                    if (pLat == null || pLon == null) continue;
+                    const name = (place.tags && (place.tags.name || place.tags['name:en'])) || 'City';
+                    const icon = L.divIcon({
+                        className: 'custom-div-icon',
+                        html: '<div style="background-color:#ef4444;width:16px;height:16px;border:2px solid #000;box-shadow:2px 2px 0 0 #000;cursor:pointer;"></div>',
+                        iconSize: [16, 16], iconAnchor: [8, 8]
+                    });
+                    const mrk = L.marker([pLat, pLon], { icon }).addTo(hiderEligibleLayer);
+                    mrk.on('click', async () => {
+                        if (targetMarker) map.removeLayer(targetMarker);
+                        targetMarker = L.marker([pLat, pLon]).addTo(map);
+                        window.tempTarget = { lat: pLat, lng: pLon, placeId: null, displayName: name };
+                        renderUI();
+                        try {
+                            const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${pLat}&lon=${pLon}&format=json&addressdetails=1&zoom=10`, {
+                                headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
+                            });
+                            const revData = await rev.json();
+                            if (revData && (revData.place_id != null || revData.display_name)) {
+                                window.tempTarget.placeId = revData.place_id != null ? String(revData.place_id) : null;
+                                window.tempTarget.displayName = revData.display_name || (revData.address && [revData.address.city || revData.address.town || revData.address.village, revData.address.country].filter(Boolean).join(', ')) || name;
+                                renderUI();
+                            }
+                        } catch (e) {}
+                    });
+                }
+            } catch (e) {
+                showToast('Could not load eligible cities', 'error');
+            }
+        }
+
         // --- Core Logic ---
         async function handleMapClick(e) {
             const { lat, lng } = e.latlng;
 
-            // Setter Logic: same as guesser — reverse geocode to get place name and place_id before confirm
-            if (myRole === 'setter' && state.phase === GameState.SETUP_LOC) {
-                if (targetMarker) map.removeLayer(targetMarker);
-                targetMarker = L.marker([lat, lng]).addTo(map);
-                window.tempTarget = { lat, lng, placeId: null, displayName: null };
-                renderUI();
-                try {
-                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1&zoom=10`, {
-                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
-                    });
-                    const data = await res.json();
-                    if (data && (data.place_id != null || data.display_name)) {
-                        window.tempTarget.placeId = data.place_id != null ? String(data.place_id) : null;
-                        window.tempTarget.displayName = data.display_name || (data.address && [data.address.city || data.address.town || data.address.village, data.address.country].filter(Boolean).join(', ')) || null;
-                        renderUI();
-                    }
-                } catch (e) {}
+            // Setter: target is set only by clicking a red square (see fetchHiderEligibleCities)
+            if (myRole === 'hider' && state.phase === GameState.SETUP_LOC) {
+                showToast('Click a red square to select a city', 'info');
                 return;
             }
 
             // Guesser Logic (Click to guess or place radar)
-            if (myRole === 'guesser' && state.phase === GameState.PLAYING) {
+            if (myRole === 'seeker' && state.phase === GameState.PLAYING) {
                 if (selectedPlacementItem === 'radar' && state.radarPlacementPlayerId === socket.id) {
                     const radiusKm = state.radarPlacementRadiusKm != null ? state.radarPlacementRadiusKm : 500;
                     socket.emit('place_radar', { lobbyId: myLobbyId, lat, lon, radiusKm });
@@ -1098,9 +1156,9 @@
             }
         }
 
-        async function handleSetterSearch(e) {
+        async function handleHiderSearch(e) {
             e.preventDefault();
-            const input = document.getElementById('setter-search-input');
+            const input = document.getElementById('hider-search-input');
             const query = input.value.trim();
             if (!query) return;
 
@@ -1116,16 +1174,11 @@
                 if (data && data.length > 0) {
                     const lat = parseFloat(data[0].lat);
                     const lon = parseFloat(data[0].lon);
-                    window.tempTarget = {
-                        lat,
-                        lng: lon,
-                        placeId: data[0].place_id != null ? String(data[0].place_id) : null,
-                        displayName: data[0].display_name || null
-                    };
-                    if (targetMarker) map.removeLayer(targetMarker);
-                    targetMarker = L.marker([lat, lon]).addTo(map);
+                    if (targetMarker) { map.removeLayer(targetMarker); targetMarker = null; }
+                    window.tempTarget = null;
                     map.setView([lat, lon], 10);
-                    showToast(`Found: ${data[0].display_name.split(',')[0]}`, "info");
+                    await fetchHiderEligibleCities(lat, lon);
+                    showToast('Click a red square to lock in your location', 'info');
                 } else {
                     showToast("Location not found", "error");
                 }
@@ -1178,8 +1231,8 @@
                 renderUI();
                 showToast('Guess is taking longer than usual (queue or server). You can guess again.', 'info');
                 processQueue();
-            }, 3000);
-            setTimeout(() => { if (isProcessing) renderUI(); }, 2000); // Re-render so "Stop waiting" can appear after 2s
+            }, 10000);
+            setTimeout(() => { if (isProcessing) renderUI(); }, 10000); // Re-render so "Stop waiting" can appear after 10s
             const onUpdate = () => { clearTimeout(timeoutId); };
             socket.once('game_state_update', onUpdate);
             socket.once('error', onUpdate);
@@ -1323,32 +1376,22 @@
             overlay.classList.remove('hidden');
             const sessionKey = vote.endAt + '|' + vote.options.map(o => o.id).join(',');
             const isNewSession = sessionKey !== lastPowerupVoteSession;
-            if (isNewSession) {
-                lastPowerupVoteSession = sessionKey;
-                const votedBy = vote.votedBy || {};
-                const myVote = votedBy[socket.id];
-                const canVote = myRole === 'guesser' && myVote === undefined;
-                cardsEl.innerHTML = vote.options.map(opt => {
-                    const votes = (vote.votes && vote.votes[opt.id]) || 0;
-                    const isMyVote = myVote === opt.id;
-                    return `
-                        <div class="powerup-card bg-white border-4 border-black shadow-[6px_6px_0_0_#000] p-4 flex-1 min-w-[180px] max-w-[240px]" data-opt-id="${opt.id.replace(/"/g, '&quot;')}">
-                            <div class="font-black text-sm mb-1">${opt.label}</div>
-                            <div class="text-xs text-gray-600 mb-3">${opt.description}</div>
-                            <div class="text-xs font-bold mb-2">Votes: <span class="powerup-votes">${votes}</span></div>
-                            ${canVote ? `<button type="button" onclick="votePowerup('${opt.id.replace(/'/g, "\\'")}')" class="neo-btn w-full py-2 bg-[#22c55e] text-black font-bold text-xs">Vote</button>` : isMyVote ? '<span class="text-xs font-bold text-green-600">You voted</span>' : ''}
-                        </div>`;
-                }).join('');
-                lucide.createIcons();
-            } else {
-                vote.options.forEach(opt => {
-                    const card = cardsEl.querySelector('[data-opt-id="' + CSS.escape(opt.id) + '"]');
-                    if (card) {
-                        const votesSpan = card.querySelector('.powerup-votes');
-                        if (votesSpan) votesSpan.textContent = (vote.votes && vote.votes[opt.id]) || 0;
-                    }
-                });
-            }
+            if (isNewSession) lastPowerupVoteSession = sessionKey;
+            const votedBy = vote.votedBy || {};
+            const myVote = votedBy[socket.id];
+            const canVote = myRole === 'seeker' && myVote === undefined;
+            cardsEl.innerHTML = vote.options.map(opt => {
+                const votes = (vote.votes && vote.votes[opt.id]) || 0;
+                const isMyVote = myVote === opt.id;
+                return `
+                    <div class="powerup-card bg-white border-4 border-black shadow-[6px_6px_0_0_#000] p-4 flex-1 min-w-[180px] max-w-[240px]" data-opt-id="${opt.id.replace(/"/g, '&quot;')}">
+                        <div class="font-black text-sm mb-1">${opt.label}</div>
+                        <div class="text-xs text-gray-600 mb-3">${opt.description}</div>
+                        <div class="text-xs font-bold mb-2">Votes: <span class="powerup-votes">${votes}</span></div>
+                        ${canVote ? `<button type="button" onclick="votePowerup('${opt.id.replace(/'/g, "\\'")}')" class="neo-btn w-full py-2 bg-[#22c55e] text-black font-bold text-xs">Vote</button>` : isMyVote ? '<span class="text-xs font-bold text-green-600">You voted</span>' : ''}
+                    </div>`;
+            }).join('');
+            lucide.createIcons();
             function updateCountdown() {
                 if (!countdownEl || !vote.endAt) return;
                 const left = Math.max(0, Math.ceil((vote.endAt - Date.now()) / 1000));
@@ -1688,7 +1731,7 @@
                 `;
             }
             else if (state.phase === GameState.SETUP_LOC) {
-                if (myRole === 'setter') {
+                if (myRole === 'hider') {
                     container.innerHTML = `
                         <div class="flex flex-col h-full">
                             <div class="bg-[#fbbf24] text-black p-4 mb-4 border-4 border-black shadow-[4px_4px_0_0_#000]">
@@ -1709,8 +1752,8 @@
                                 ` : `
                                     <i data-lucide="map" class="w-12 h-12 text-gray-500 mb-4"></i>
                                     <p class="text-gray-600 font-medium mb-4">Click map OR type to search (same as seekers)...</p>
-                                    <form onsubmit="handleSetterSearch(event)" class="w-full flex gap-2">
-                                        <input type="text" id="setter-search-input" class="neo-input flex-1 p-2 text-sm" placeholder="Type city (e.g. Paris, France)...">
+                                    <form onsubmit="handleHiderSearch(event)" class="w-full flex gap-2">
+                                        <input type="text" id="hider-search-input" class="neo-input flex-1 p-2 text-sm" placeholder="Type city (e.g. Paris, France)...">
                                         <button type="submit" class="neo-btn bg-black text-white px-3 font-bold"><i data-lucide="search" class="w-4 h-4"></i></button>
                                     </form>
                                 `}
@@ -1725,14 +1768,14 @@
                     container.innerHTML = `
                         <div class="flex flex-col h-full items-center justify-center text-center p-6">
                             <div class="loader mb-4"></div>
-                            <h2 class="text-xl font-bold">Setter is choosing a location...</h2>
+                            <h2 class="text-xl font-bold">Hider is choosing a location...</h2>
                             <p class="text-gray-500">Please wait.</p>
                         </div>
                     `;
                 }
             } 
             else if (state.phase === GameState.SETUP_IMG) {
-                if (myRole === 'setter') {
+                if (myRole === 'hider') {
                     container.innerHTML = `
                         <div class="flex flex-col h-full">
                             <div class="bg-[#fbbf24] text-black p-4 mb-6 border-4 border-black shadow-[4px_4px_0_0_#000]">
@@ -1760,7 +1803,7 @@
                     container.innerHTML = `
                         <div class="flex flex-col h-full items-center justify-center text-center p-6">
                             <div class="loader mb-4"></div>
-                            <h2 class="text-xl font-bold">Setter is uploading an image...</h2>
+                            <h2 class="text-xl font-bold">Hider is uploading an image...</h2>
                         </div>
                     `;
                 }
@@ -1773,20 +1816,20 @@
                 }
 
                 const gCount = state.guesses.length;
-                const isSetter = myRole === 'setter';
+                const isSetter = myRole === 'hider';
                 const isTurnBased = state.settings?.gameMode === 'turn_based';
-                const isMyTurn = isTurnBased && state.turnState?.currentGuesserId === socket.id;
-                const currentGuesser = state.players.find(p => p.id === state.turnState?.currentGuesserId);
+                const isMyTurn = isTurnBased && state.turnState?.currentSeekerId === socket.id;
+                const currentSeeker = state.players.find(p => p.id === state.turnState?.currentSeekerId);
                 const isFFA = state.settings?.gameMode === 'ffa';
                 const cooldownSecondsLeft = (isFFA && state.guessCooldownUntil && Date.now() < state.guessCooldownUntil)
                     ? Math.max(0, Math.ceil((state.guessCooldownUntil - Date.now()) / 1000)) : 0;
                 const inCooldown = isFFA && cooldownSecondsLeft > 0;
                 const cooldownProgress = (isFFA && state.guessCooldownUntil && state.guessCooldownStarted && Date.now() < state.guessCooldownUntil)
                     ? Math.min(100, Math.max(0, (Date.now() - state.guessCooldownStarted) / (state.guessCooldownUntil - state.guessCooldownStarted) * 100)) : 100;
-                const mustVote = state.powerupVote && myRole === 'guesser';
+                const mustVote = state.powerupVote && myRole === 'seeker';
                 const mustPlaceRadar = state.radarPlacementPlayerId === socket.id;
-                const snipingBlock = state.snipingImmunityUntil && Date.now() < state.snipingImmunityUntil && state.snipingImmunityGuesserId !== socket.id;
-                const immuneNickname = state.snipingImmunityGuesserId && state.players.find(p => p.id === state.snipingImmunityGuesserId)?.nickname || 'Someone';
+                const snipingBlock = state.snipingImmunityUntil && Date.now() < state.snipingImmunityUntil && state.snipingImmunitySeekerId !== socket.id;
+                const immuneNickname = state.snipingImmunitySeekerId && state.players.find(p => p.id === state.snipingImmunitySeekerId)?.nickname || 'Someone';
                 const guessDisabled = isProcessing || inCooldown || mustVote || mustPlaceRadar || snipingBlock;
                 
                 const secondImageUploadBy = state.secondImageUploadBy || 0;
@@ -1822,22 +1865,22 @@
 
                     ${isTurnBased ? `
                         <div class="mt-4 p-3 border-4 border-black text-center font-bold shadow-[4px_4px_0_0_#000] ${isMyTurn ? 'bg-[#22c55e] text-black' : 'bg-white text-gray-600'}">
-                            ${isMyTurn ? `YOUR TURN! ${state.timeLeft ? `(${state.timeLeft}s)` : ''}` : `Current Turn: ${currentGuesser?.nickname || 'Unknown'} ${state.timeLeft ? `(${state.timeLeft}s)` : ''}`}
+                            ${isMyTurn ? `YOUR TURN! ${state.timeLeft ? `(${state.timeLeft}s)` : ''}` : `Current Turn: ${currentSeeker?.nickname || 'Unknown'} ${state.timeLeft ? `(${state.timeLeft}s)` : ''}`}
                         </div>
                     ` : ''}
 
                     ${isTurnBased && !isMyTurn && !isSetter ? `
                         <div class="mt-4 p-4 bg-gray-100 border-4 border-black text-center">
-                            <p class="font-bold text-lg mb-1">Waiting for ${currentGuesser?.nickname || 'player'}...</p>
+                            <p class="font-bold text-lg mb-1">Waiting for ${currentSeeker?.nickname || 'player'}...</p>
                             <p class="text-sm text-gray-500 font-bold">
                                 ${(() => {
-                                    const guessers = state.players.filter(p => p.role === 'guesser');
-                                    const myIdx = guessers.findIndex(p => p.id === socket.id);
-                                    const currentIdx = guessers.findIndex(p => p.id === state.turnState?.currentGuesserId);
+                                    const seekers = state.players.filter(p => p.role === 'seeker');
+                                    const myIdx = seekers.findIndex(p => p.id === socket.id);
+                                    const currentIdx = seekers.findIndex(p => p.id === state.turnState?.currentSeekerId);
                                     let turns = 0;
                                     if (myIdx !== -1 && currentIdx !== -1) {
                                         if (myIdx > currentIdx) turns = myIdx - currentIdx;
-                                        else turns = (guessers.length - currentIdx) + myIdx;
+                                        else turns = (seekers.length - currentIdx) + myIdx;
                                     }
                                     return turns === 1 ? 'You are next!' : `${turns} turns until you`;
                                 })()}
@@ -1858,7 +1901,7 @@
                                 <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${(isProcessing || mustPlaceRadar || mustVote || snipingBlock) ? 'disabled' : ''}>
                                     ${mustPlaceRadar ? 'Place radar' : mustVote ? 'Vote first' : isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
                                 </button>
-                                ${(isProcessing && lastGuessEmittedAt && (Date.now() - lastGuessEmittedAt >= 2000)) ? `
+                                ${(isProcessing && lastGuessEmittedAt && (Date.now() - lastGuessEmittedAt >= 10000)) ? `
                                 <button type="button" onclick="forceStopGuess()" class="neo-btn bg-red-600 hover:bg-red-700 text-white px-4 py-3 font-bold text-sm whitespace-nowrap">Stop waiting</button>
                                 ` : ''}
                             `}
@@ -1867,7 +1910,7 @@
                     
                     ${isSetter ? `
                         <div class="mt-4 bg-[#fbbf24] p-3 border-4 border-black text-center font-bold shadow-[4px_4px_0_0_#000]">
-                            You are the Setter. Wait for guesses!
+                            You are the Hider. Wait for guesses!
                         </div>
                         ${state.target?.name ? `<div class="mt-2 bg-white p-2 border-2 border-black text-center text-sm font-bold">Location: ${state.target.name}</div>` : ''}
                     ` : ''}
@@ -1971,14 +2014,14 @@
                 `;
             }
             else if (state.phase === GameState.HIDER_WON) {
-                const setter = state.players.find(p => p.id === state.winnerId);
+                const hider = state.players.find(p => p.id === state.winnerId);
                 container.innerHTML = `
                     <div class="flex flex-col items-center justify-center h-full text-center p-6">
                         <div class="w-24 h-24 bg-[#ef4444] text-white flex items-center justify-center mb-6 border-4 border-black shadow-[5px_5px_0_0_#000]">
                             <i data-lucide="shield-check" class="w-12 h-12"></i>
                         </div>
-                        <h2 class="text-3xl font-black text-black mb-2">Setter Survived!</h2>
-                        <p class="text-gray-700 mb-2 font-bold">${setter ? setter.nickname : 'The setter'} wins.</p>
+                        <h2 class="text-3xl font-black text-black mb-2">Hider Survived!</h2>
+                        <p class="text-gray-700 mb-2 font-bold">${hider ? hider.nickname : 'The hider'} wins.</p>
                         <p class="text-gray-600 mb-6 text-sm">Location: <span class="font-black text-black">${state.target.name || '—'}</span></p>
                         
                         <div class="bg-[#f5f5f0] w-full p-4 border-4 border-black shadow-[4px_4px_0_0_#000] mb-8">

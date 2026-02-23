@@ -1,24 +1,30 @@
 # Patch Notes
 
+## v1.6.3
+
+- **Terminology**: "Setter" is now **Hider** and "Guesser(s)" is now **Seeker(s)** throughout the app (roles, UI, scoreboard, patch notes).
+
 ## v1.6.2
 
-- **Stop waiting button**: As a seeker, if your guess has been loading for 2 seconds or more, a **Stop waiting** button appears so you can cancel the loading state and guess again (the previous guess may still complete on the server).
+- **Hider: lock location by clicking a red square**: Typing a city in hider search only zooms the map and shows eligible cities (red squares). To lock the target, the hider must **click a red square** on the map. Clicking elsewhere shows a reminder. Red squares use the same population rules as the game; panning/zooming in setup (zoom ≥ 10) loads red squares for the visible area.
+- **Stop waiting button**: As a seeker, if your guess has been loading for 10 seconds or more, a **Stop waiting** button appears and a “Guess is taking longer than usual” toast is shown so you can cancel the loading state and guess again (the previous guess may still complete on the server).
+- **Powerup vote**: When all seekers have voted, the 10 second countdown is skipped and the winning powerup is applied immediately.
 
 ## v1.6.1
 
 - **Hint thresholds from lobby**: In-game stage bar and labels (P1 @5, Country @30, etc.) now always use the lobby’s configured hint thresholds from settings; no more wrong defaults (e.g. 20–40–60–80). Settings are merged from the server on every game state update.
 - **Hider victory default**: Hider victory is now **on by default** when creating a lobby (checkbox checked).
 - **Guess “Loading” fix**: Server now broadcasts state after “not found” or “duplicate” so the client clears the loading state. Client has a 3s safety timeout and clears loading + shows a toast if a guess isn’t processed in time.
-- **Setter place name before confirm**: When setting a location, the setter sees the **resolved place name** (from Nominatim) before confirming. Same click + type-to-search flow as seekers; the chosen place’s **place_id** is sent so wins match the same OSM place when a seeker guesses it.
+- **Hider place name before confirm**: When setting a location, the hider sees the **resolved place name** (from Nominatim) before confirming. Same click + type-to-search flow as seekers; the chosen place’s **place_id** is sent so wins match the same OSM place when a seeker guesses it.
 - **Second image at stage**: Lobby setting “Second image required at” lets you choose **Stage 2**, **Stage 3**, or **Stage 4** (default Stage 3). The hider must upload the second image when guess count reaches that stage’s threshold.
 - **Guess logging**: Server logs every guess when **received** (RECEIVED), and again when **processed** (PROCESSED with outcome). If a guess is not processed within 3 seconds, the server logs why (queue backlog or Nominatim/API delay).
 
 ## v1.6.0
 
-- **Powerup voting system**: Replaced the old 3 fixed hints (hemisphere/continent/country) with 5 stages. At stages 1–4, the server draws 2 powerups from a pool; guessers vote for 10 seconds via animated cards on the map; the winner is applied to all. Stage 5 always reveals the country (no vote). You must vote (or wait for the timer) before guessing again when a stage unlocks.
+- **Powerup voting system**: Replaced the old 3 fixed hints (hemisphere/continent/country) with 5 stages. At stages 1–4, the server draws 2 powerups from a pool; seekers vote for 10 seconds via animated cards on the map; the winner is applied to all. Stage 5 always reveals the country (no vote). You must vote (or wait for the timer) before guessing again when a stage unlocks.
 - **Lobby settings**: Create lobby now has 5 inputs for when each stage triggers (Stage 1–4 powerups and Country reveal), with defaults 20, 40, 60, 80, 100 guesses.
-- **Powerup effects**: Remove 4/5 random countries, increase scan zone (+10/15/75/100 km, stacks), lower guess cooldown (−1 s, stacks), sniping immunity (only the guesser who revealed the country can guess for 15 s), reveal letter count and 1/2 random letters, reveal hemisphere, 750 km or custom-size radar (random player places pin), and automatic country reveal at stage 5.
-- **Radar**: When a radar powerup wins, a random guesser is chosen to place a pin on the map; the server returns the scan area and it is shown as a green overlay. Custom radar lets the placer choose radius (client sends radius; 750 km radar uses a fixed radius).
+- **Powerup effects**: Remove 4/5 random countries, increase scan zone (+10/15/75/100 km, stacks), lower guess cooldown (−1 s, stacks), sniping immunity (only the seeker who revealed the country can guess for 15 s), reveal letter count and 1/2 random letters, reveal hemisphere, 750 km or custom-size radar (random player places pin), and automatic country reveal at stage 5.
+- **Radar**: When a radar powerup wins, a random seeker is chosen to place a pin on the map; the server returns the scan area and it is shown as a green overlay. Custom radar lets the placer choose radius (client sends radius; 750 km radar uses a fixed radius).
 - **City name hint**: Powerups can reveal the number of letters in the city name and then reveal 1 or 2 random letters; shown as "City name: _ _ _ _ _" in the lower-left of the map.
 - **Continent hint removed**: The old continent hint (which could load forever) is removed; hemisphere and country are now only revealed via powerups or stage 5.
 - **Play font**: All text on the site now uses the Play font.
@@ -29,19 +35,19 @@
 - **Second image (default)**: When 50% of the allowed guesses (to hider victory) have been used, the hider must upload a second image within 60s (then 30s warning, then 1 random country removed every 15s until uploaded). This is always on; it is no longer a stage-3 powerup.
 - **Stage 4 – Coastal or landlocked**: New powerup option: "Coastal or landlocked?" reveals whether the **country** of the city is coastal or landlocked; shown in the Hints line with other powerup hints.
 - **Red square click to guess**: Seekers can click the red hint (city) squares on the map to submit that city name as a guess instead of typing or clicking near them.
-- **Hider victory**: New lobby setting "Hider victory (setter wins at 1.25× country threshold)". When enabled, if the setter survives until guess count reaches 1.25× the country-reveal threshold (e.g. 50 if country is at 40), the setter wins and the round ends.
-- **Scoreboard (Tab)**: The Tab player list now shows a per-lobby scoreboard: each player’s wins as hider and as guesser (count and %), total wins, this round’s guess count, total guesses, and rounds played.
+- **Hider victory**: New lobby setting "Hider victory (hider wins at 1.25× country threshold)". When enabled, if the hider survives until guess count reaches 1.25× the country-reveal threshold (e.g. 50 if country is at 40), the hider wins and the round ends.
+- **Scoreboard (Tab)**: The Tab player list now shows a per-lobby scoreboard: each player’s wins as hider and as seeker (count and %), total wins, this round’s guess count, total guesses, and rounds played.
 - **Lobby presets**: Create lobby has **Casual** (default) and **Competitive** presets. Casual: stages 5/10/15/20/25, FFA. Competitive: stages 20/35/50/65/80, Turn Based. Default stage inputs and game mode follow the selected preset.
 
 ## v1.4.1
 
-- **Win condition**: Only the **exact location** (same OSM place) counts as a win. Guessing a nearby city (e.g. 1 km away) no longer wins; you must guess the same place the setter chose (matched by Nominatim `place_id`). Rules text updated to "First to guess the exact location (same place) wins!"
+- **Win condition**: Only the **exact location** (same OSM place) counts as a win. Guessing a nearby city (e.g. 1 km away) no longer wins; you must guess the same place the hider chose (matched by Nominatim `place_id`). Rules text updated to "First to guess the exact location (same place) wins!"
 - **REST Countries fix**: Continent hint no longer fails with 400; the API now uses the required `?fields=cca2,continents` query for the `/all` endpoint.
 - **Guess cooldown (FFA)**: No more "please wait X seconds" toast. The guess button shows cooldown state: disabled with a countdown (e.g. "5s") and an animated green progress bar that fills until you can guess again. Placeholder stays "Type or click map..." during cooldown.
 - **Hint bar**: After each hint unlocks, the bar shows the **actual** value (e.g. NORTHERN, EUROPE, NORWAY) instead of the generic "Hemisphere", "Continent", "Country". Locked slots still show the threshold number and label.
 - **Hint progress bar**: The three segments now fill by **percentage** toward each threshold (animated, synced to guess count).
 - **Zoom to country**: When the country hint is revealed (by server at 90 guesses or same-country guess), the map zooms to fit the revealed country.
-- **Setter UI**: Removed "Current Guesses: N". The setter now sees **Location: &lt;name&gt;** (the name of the place they set) under "You are the Setter."
+- **Hider UI**: Removed "Current Guesses: N". The hider now sees **Location: &lt;name&gt;** (the name of the place they set) under "You are the Hider."
 - **Changelog formatting**: Patch notes modal now renders Markdown (headings, bold, lists) instead of plain text.
 
 ## v1.4.0
