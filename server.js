@@ -208,8 +208,26 @@ async function fetchWithTimeout(url, options = {}) {
 function optimizeGeometry(geoJson) {
     if (!geoJson) return null;
     try {
+        // Ensure it's a Polygon or MultiPolygon
+        const geom = geoJson.geometry || geoJson;
+        const type = geom.type;
+        
+        if (type !== 'Polygon' && type !== 'MultiPolygon') {
+            console.warn(`optimizeGeometry: Invalid type ${type}`);
+            return null;
+        }
+
+        // Fix topology using buffer(0)
+        // Note: turf.buffer requires a Feature, not Geometry.
+        // If geoJson is Geometry, wrap it.
+        const feature = (geoJson.type === 'Feature') ? geoJson : turf.feature(geoJson);
+        
+        const cleaned = turf.buffer(feature, 0);
+        if (!cleaned) return feature; // Fallback to original if buffer fails
+
         // Simplify: tolerance 0.01 degrees (~1km), highQuality false for speed
-        const simplified = turf.simplify(geoJson, { tolerance: 0.01, highQuality: false, mutate: true });
+        const simplified = turf.simplify(cleaned, { tolerance: 0.01, highQuality: false, mutate: true });
+        
         // Truncate: limit coordinates to 4 decimal places
         return turf.truncate(simplified, { precision: 4, coordinates: 2, mutate: true });
     } catch (e) {
@@ -623,8 +641,10 @@ io.on('connection', (socket) => {
                             let contFeat = turf.feature(contData[0].geojson);
                             contFeat = optimizeGeometry(contFeat); // Optimize
 
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, contFeat]));
-                            if (intersect) newPoly = intersect;
+                            if (contFeat) {
+                                const intersect = turf.intersect(turf.featureCollection([newPoly, contFeat]));
+                                if (intersect) newPoly = intersect;
+                            }
                         }
                     }
                 } catch(e) { console.error("Continent mask error", e); }
@@ -643,8 +663,10 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize
 
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
-                            if (intersect) newPoly = intersect;
+                            if (countryFeat) {
+                                const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
+                                if (intersect) newPoly = intersect;
+                            }
                         }
                     }
                 } catch(e) { console.error("Country reveal error (90 guesses)", e); }
@@ -667,10 +689,12 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
                             
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
-                            if (intersect) newPoly = intersect;
-                            else newPoly = countryFeat;
-                            lobby.gameState.hints.country = true;
+                            if (countryFeat) {
+                                const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
+                                if (intersect) newPoly = intersect;
+                                else newPoly = countryFeat;
+                                lobby.gameState.hints.country = true;
+                            }
                         }
                     }
                 } catch(e) { console.error("Country reveal error:", e); }
@@ -686,9 +710,11 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
 
-                            const diff = turf.difference(turf.featureCollection([newPoly, countryFeat]));
-                            if (diff) newPoly = diff;
-                            lobby.gameState.wrongCountries.push(countryCode);
+                            if (countryFeat) {
+                                const diff = turf.difference(turf.featureCollection([newPoly, countryFeat]));
+                                if (diff) newPoly = diff;
+                                lobby.gameState.wrongCountries.push(countryCode);
+                            }
                         }
                     }
                 } catch(e) { console.error("Wrong country mask error:", e); }
