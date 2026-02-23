@@ -94,7 +94,7 @@ const INITIAL_GAME_STATE = {
     image: null,
     guesses: [],
     validPolygon: null, // Starts as null, becomes world polygon on first guess
-    hintLabels: { hemisphere: null, continent: null, country: null }, // Used by powerups (hemisphere, country reveal)
+    hintLabels: { hemisphere: null, continent: null, country: null, coastal: null }, // powerups
     winnerId: null,
     wrongCountries: [], // Array of country codes
     // Powerup voting system (5 stages)
@@ -111,15 +111,21 @@ const INITIAL_GAME_STATE = {
     radarPlacementPlayerId: null,
     radarPlacementRadiusKm: null, // 750 or custom
     radarPlacementEndAt: null,
-    radarResultPolygon: null
+    radarResultPolygon: null,
+    // Second image (stage 3): setter has 60s to upload, then warning, then penalty every 15s from 90s
+    secondImageUploadBy: null,    // timestamp: upload deadline (60s after stage 3 starts)
+    secondImageUrl: null,         // /uploads/... when uploaded
+    secondImageWarningShown: false,
+    secondImageLastPenaltyAt: null // when we last applied a penalty (every 15s after 90s)
 };
 
 const DEFAULT_SETTINGS = {
     minPop: 5000,
-    hintThresholds: [20, 40, 60, 80, 100], // 5 stages: powerup 1–4, then country reveal
+    hintThresholds: [5, 10, 15, 20, 25], // 5 stages; Casual default
     password: null,
     gameMode: 'ffa', // 'ffa' or 'turn_based'
-    moveTimeLimit: 0 // Seconds, 0 = off
+    moveTimeLimit: 0, // Seconds, 0 = off
+    hiderVictoryEnabled: false // If true, setter wins when guess count reaches 1.25× country threshold
 };
 
 // Powerup IDs (used for conditionals and activePowerups)
@@ -138,7 +144,8 @@ const POWERUP_IDS = {
     REVEAL_ONE_LETTER: 'reveal_one_letter',
     REVEAL_TWO_LETTERS: 'reveal_two_letters',
     REVEAL_HEMISPHERE: 'reveal_hemisphere',
-    REVEAL_COUNTRY: 'reveal_country'
+    REVEAL_COUNTRY: 'reveal_country',
+    REVEAL_COASTAL: 'reveal_coastal'
 };
 
 // Stage 1–4 pools: { id, label, description }. Condition: (gameState) => boolean to include in draw.
@@ -166,9 +173,13 @@ const POWERUP_POOLS = [
     [ // Stage 4
         { id: POWERUP_IDS.RADAR_CUSTOM, label: '1× Custom radar', description: 'Random player places pin and scalable circle.' },
         { id: POWERUP_IDS.SCAN_ZONE_100, label: 'Scan +100 km', description: 'Stacks.' },
-        { id: POWERUP_IDS.REVEAL_TWO_LETTERS, label: 'Reveal 2 letters', description: 'Only if letter count was selected.', condition: (gs) => gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.REVEAL_LETTER_COUNT) }
+        { id: POWERUP_IDS.REVEAL_TWO_LETTERS, label: 'Reveal 2 letters', description: 'Only if letter count was selected.', condition: (gs) => gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.REVEAL_LETTER_COUNT) },
+        { id: POWERUP_IDS.REVEAL_COASTAL, label: 'Coastal or landlocked?', description: 'Is the country of the city coastal or landlocked?' }
     ]
 ];
+
+// Landlocked countries (ISO 3166-1 alpha-2). Coastal = not in this set.
+const LANDLOCKED_COUNTRY_CODES = new Set(['AD', 'AM', 'AT', 'AZ', 'BY', 'BE', 'BT', 'BO', 'BW', 'BF', 'BI', 'CF', 'TD', 'CZ', 'ET', 'HU', 'KZ', 'KG', 'LA', 'LS', 'LI', 'LU', 'MK', 'MW', 'ML', 'MD', 'MN', 'NE', 'NP', 'PY', 'RW', 'SM', 'RS', 'SK', 'SS', 'SZ', 'CH', 'TJ', 'TM', 'UG', 'UZ', 'VA', 'ZM', 'ZW']);
 
 function drawTwoFromPool(stageIndex, gameState) {
     const pool = POWERUP_POOLS[stageIndex];
@@ -241,8 +252,13 @@ async function applyPowerup(lobbyId, powerupId, stageIndex) {
             gs.cityNameRevealedLetters.push({ index: idx, letter: name[idx] });
         }
     }
+    else if (powerupId === POWERUP_IDS.REVEAL_COASTAL && lobby.gameState.target && lobby.gameState.target.countryCode) {
+        if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null, coastal: null };
+        const code = (lobby.gameState.target.countryCode || '').toUpperCase();
+        gs.hintLabels.coastal = LANDLOCKED_COUNTRY_CODES.has(code) ? 'Landlocked' : 'Coastal';
+    }
     else if (powerupId === POWERUP_IDS.REVEAL_HEMISPHERE) {
-        if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null };
+        if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null, coastal: null };
         gs.hintLabels.hemisphere = lobby.gameState.target.lat >= 0 ? 'Northern' : 'Southern';
         if (gs.validPolygon) {
             const isNorth = lobby.gameState.target.lat >= 0;
@@ -351,9 +367,10 @@ function broadcastState(lobbyId) {
     const lobby = lobbies.get(lobbyId);
     if (!lobby) return;
 
-    // Sync player roles with current setterId
+    // Sync player roles and ensure stats exist
     lobby.players.forEach(p => {
         p.role = (p.id === lobby.gameState.setterId) ? 'setter' : 'guesser';
+        ensurePlayerStats(p);
     });
 
     // Sanitize state for guessers (hide target unless WON or they are setter)
@@ -365,7 +382,7 @@ function broadcastState(lobbyId) {
         if (!socket) return;
 
         const isSetter = player.id === fullState.setterId;
-        const isWon = fullState.phase === 'WON';
+        const isWon = fullState.phase === 'WON' || fullState.phase === 'HIDER_WON';
 
         const sanitizedState = {
             ...fullState,
@@ -390,10 +407,31 @@ function broadcastState(lobbyId) {
             radarPlacementPlayerId: fullState.radarPlacementPlayerId,
             radarPlacementRadiusKm: fullState.radarPlacementRadiusKm,
             radarPlacementEndAt: fullState.radarPlacementEndAt,
-            radarResultPolygon: fullState.radarResultPolygon
+            radarResultPolygon: fullState.radarResultPolygon,
+            secondImageUploadBy: fullState.secondImageUploadBy,
+            secondImageUrl: fullState.secondImageUrl
         };
 
         socket.emit('game_state_update', sanitizedState);
+    });
+}
+
+function ensurePlayerStats(player) {
+    if (player.winsAsSetter == null) player.winsAsSetter = 0;
+    if (player.winsAsGuesser == null) player.winsAsGuesser = 0;
+    if (player.totalGuesses == null) player.totalGuesses = 0;
+    if (player.roundsPlayed == null) player.roundsPlayed = 0;
+}
+
+function updateRoundStats(lobby, winType, winnerId) {
+    const guesses = lobby.gameState.guesses || [];
+    lobby.players.forEach(p => {
+        ensurePlayerStats(p);
+        p.roundsPlayed = (p.roundsPlayed || 0) + 1;
+        const thisRoundGuesses = guesses.filter(g => g.socketId === p.id).length;
+        p.totalGuesses = (p.totalGuesses || 0) + thisRoundGuesses;
+        if (winType === 'guesser' && p.id === winnerId) p.winsAsGuesser = (p.winsAsGuesser || 0) + 1;
+        if (winType === 'hider' && p.id === lobby.gameState.setterId) p.winsAsSetter = (p.winsAsSetter || 0) + 1;
     });
 }
 
@@ -461,6 +499,14 @@ function optimizeGeometry(geoJson) {
     }
 }
 
+function logSlowGuess(lobbyId, item, reason) {
+    if (!item || item.enqueuedAt == null) return;
+    const elapsed = Date.now() - item.enqueuedAt;
+    if (elapsed >= 3000) {
+        console.warn(`[guess_queue] Guess took ${(elapsed / 1000).toFixed(1)}s to register. ${reason}`);
+    }
+}
+
 // --- Guess queue: FIFO, one-at-a-time, retry on API failure until success ---
 async function processGuessQueue(lobbyId) {
     const lobby = getLobby(lobbyId);
@@ -489,6 +535,7 @@ async function processGuessQueue(lobbyId) {
             const data = await res.json();
             if (!data || data.length === 0) {
                 if (playerSocket) playerSocket.emit('error', 'Location not found');
+                logSlowGuess(lobbyId, item, 'Nominatim returned no results for query.');
                 lobby.guessQueue.shift();
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (user error: not found). Queue length now ${lobby.guessQueue.length}`);
                 done = true;
@@ -501,6 +548,7 @@ async function processGuessQueue(lobbyId) {
             const name = guess.display_name.split(',')[0];
             if (lobby.gameState.guesses.some(g => g.name === name)) {
                 if (playerSocket) playerSocket.emit('error', 'Location already guessed!');
+                logSlowGuess(lobbyId, item, 'Nominatim responded; duplicate guess.');
                 lobby.guessQueue.shift();
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (user error: duplicate). Queue length now ${lobby.guessQueue.length}`);
                 done = true;
@@ -513,8 +561,12 @@ async function processGuessQueue(lobbyId) {
             const isSameCountry = (countryCode === lobby.gameState.target.countryCode);
             console.log(`[submit_guess] Distance: ${dist.toFixed(2)}km, Same Country: ${isSameCountry}`);
 
+            const thresholds = lobby.settings.hintThresholds || [5, 10, 15, 20, 25];
+            const countryThreshold = thresholds[4] != null ? Number(thresholds[4]) : 100;
+
             lobby.gameState.guesses.push({
                 nickname: player ? player.nickname : 'Unknown',
+                socketId: item.socketId,
                 name, lat, lon, distance: dist, isSameCountry,
                 timestamp: Date.now()
             });
@@ -531,6 +583,7 @@ async function processGuessQueue(lobbyId) {
                 lobby.gameState.phase = 'WON';
                 lobby.gameState.winnerId = item.socketId;
                 lobby.gameState.setterId = item.socketId;
+                updateRoundStats(lobby, 'guesser', item.socketId);
                 if (lobby.settings.gameMode === 'ffa') {
                     if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                     if (!lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
@@ -538,6 +591,7 @@ async function processGuessQueue(lobbyId) {
                     lobby.guessCooldownUntil[item.socketId] = until;
                     lobby.guessCooldownStarted[item.socketId] = Date.now();
                 }
+                logSlowGuess(lobbyId, item, 'Win: Nominatim + server processing.');
                 lobby.guessQueue.shift();
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (win). Queue length now ${lobby.guessQueue.length}`);
                 broadcastState(lobbyId);
@@ -545,12 +599,32 @@ async function processGuessQueue(lobbyId) {
                 break;
             }
 
+            // Hider victory: setter wins if guess count reaches 1.25× country threshold
+            const guessCount = lobby.gameState.guesses.length;
+            const hiderWinThreshold = Math.round(1.25 * countryThreshold);
+            if (lobby.settings.hiderVictoryEnabled && guessCount >= hiderWinThreshold) {
+                console.log(`[submit_guess] HIDER WINS! Survived ${guessCount} guesses (threshold ${hiderWinThreshold})`);
+                lobby.gameState.phase = 'HIDER_WON';
+                lobby.gameState.winnerId = lobby.gameState.setterId; // setter won
+                updateRoundStats(lobby, 'hider', lobby.gameState.setterId);
+                lobby.guessQueue.shift();
+                broadcastState(lobbyId);
+                done = true;
+                break;
+            }
+
+            // Second image required at 50% of hider victory threshold (default rule, not a powerup)
+            const secondImageRequirementAt = Math.round(0.5 * hiderWinThreshold);
+            if (!lobby.gameState.secondImageUploadBy && !lobby.gameState.secondImageUrl && guessCount >= secondImageRequirementAt) {
+                lobby.gameState.secondImageUploadBy = Date.now() + 60000;
+                lobby.gameState.secondImageWarningShown = false;
+                lobby.gameState.secondImageLastPenaltyAt = null;
+            }
+
             if (!lobby.gameState.validPolygon) {
                 lobby.gameState.validPolygon = turf.polygon([[[-360, 90], [360, 90], [360, -90], [-360, -90], [-360, 90]]]);
             }
             let newPoly = lobby.gameState.validPolygon;
-            const guessCount = lobby.gameState.guesses.length;
-            const thresholds = lobby.settings.hintThresholds || [20, 40, 60, 80, 100];
             const gs = lobby.gameState;
             const countryRevealed = gs.hintLabels && gs.hintLabels.country != null && gs.hintLabels.country !== '';
 
@@ -691,6 +765,7 @@ async function processGuessQueue(lobbyId) {
                 lobby.guessCooldownUntil[item.socketId] = Date.now() + duration;
                 lobby.guessCooldownStarted[item.socketId] = Date.now();
             }
+            logSlowGuess(lobbyId, item, 'Success: Nominatim response time + server processing (powerup/mask/hint cities may add delay).');
             lobby.guessQueue.shift();
             console.log(`[guess_queue] Lobby ${lobbyId} dequeued (success). Queue length now ${lobby.guessQueue.length}`);
             broadcastState(lobbyId);
@@ -740,6 +815,27 @@ app.post('/upload', upload.single('image'), (req, res) => {
     res.json({ success: true });
 });
 
+app.post('/upload_second', upload.single('image'), (req, res) => {
+    const { lobbyId, socketId } = req.body;
+    const lobby = getLobby(lobbyId);
+    if (!lobby || !req.file) {
+        if (req.file) fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Invalid upload' });
+    }
+    if (lobby.gameState.setterId !== socketId) {
+        fs.unlinkSync(req.file.path);
+        return res.status(403).json({ error: 'Not authorized' });
+    }
+    if (!lobby.gameState.secondImageUploadBy || lobby.gameState.secondImageUrl) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ error: 'Second image not available or already uploaded' });
+    }
+    lobby.gameState.secondImageUrl = '/uploads/' + req.file.filename;
+    lobby.lastInteraction = Date.now();
+    broadcastState(lobbyId);
+    res.json({ success: true });
+});
+
 // --- Socket.IO Logic ---
 
 io.on('connection', (socket) => {
@@ -753,14 +849,14 @@ io.on('connection', (socket) => {
         if (finalSettings.hintThresholds) {
             finalSettings.hintThresholds = finalSettings.hintThresholds.slice(0, 5).map(Number);
             while (finalSettings.hintThresholds.length < 5) {
-                finalSettings.hintThresholds.push([20, 40, 60, 80, 100][finalSettings.hintThresholds.length]);
+                finalSettings.hintThresholds.push([5, 10, 15, 20, 25][finalSettings.hintThresholds.length]);
             }
         }
         if (finalSettings.minPop) finalSettings.minPop = Number(finalSettings.minPop);
         if (finalSettings.moveTimeLimit) finalSettings.moveTimeLimit = Number(finalSettings.moveTimeLimit);
 
         lobbies.set(lobbyId, {
-            players: [{ id: socket.id, nickname, role: 'setter', score: 0 }],
+            players: [{ id: socket.id, nickname, role: 'setter', score: 0, winsAsSetter: 0, winsAsGuesser: 0, totalGuesses: 0, roundsPlayed: 0 }],
             gameState: JSON.parse(JSON.stringify(INITIAL_GAME_STATE)),
             settings: finalSettings,
             hostId: socket.id,
@@ -806,7 +902,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        lobby.players.push({ id: socket.id, nickname, role: 'guesser', score: 0 });
+        lobby.players.push({ id: socket.id, nickname, role: 'guesser', score: 0, winsAsSetter: 0, winsAsGuesser: 0, totalGuesses: 0, roundsPlayed: 0 });
         socket.join(lobbyId);
         
         broadcastState(lobbyId);
@@ -1064,7 +1160,7 @@ io.on('connection', (socket) => {
             if (until && Date.now() < until) return;
         }
 
-        lobby.guessQueue.push({ socketId: socket.id, query });
+        lobby.guessQueue.push({ socketId: socket.id, query, enqueuedAt: Date.now() });
         const pos = lobby.guessQueue.length;
         const nickname = (lobby.players.find(p => p.id === socket.id) || {}).nickname || socket.id;
         console.log(`[guess_queue] Lobby ${lobbyId} queued (#${pos} FIFO): socket=${socket.id} nickname=${nickname} query="${query}"`);
@@ -1148,10 +1244,14 @@ io.on('connection', (socket) => {
             lobby.gameState.image = null;
             lobby.gameState.guesses = [];
             lobby.gameState.validPolygon = null;
-            lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+            lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null, coastal: null };
             lobby.gameState.powerupStage = 0;
             lobby.gameState.activePowerups = [];
             lobby.gameState.powerupVote = null;
+            lobby.gameState.secondImageUploadBy = null;
+            lobby.gameState.secondImageUrl = null;
+            lobby.gameState.secondImageWarningShown = false;
+            lobby.gameState.secondImageLastPenaltyAt = null;
             lobby.gameState.snipingImmunityUntil = null;
             lobby.gameState.snipingImmunityGuesserId = null;
             lobby.gameState.cityNameLetterCount = null;
@@ -1216,7 +1316,11 @@ function handleDisconnect(socket, specificLobbyId = null) {
                     lobby.gameState.image = null;
                     lobby.gameState.guesses = [];
                     lobby.gameState.validPolygon = null;
-                    lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                    lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null, coastal: null };
+                    lobby.gameState.secondImageUploadBy = null;
+                    lobby.gameState.secondImageUrl = null;
+                    lobby.gameState.secondImageWarningShown = false;
+                    lobby.gameState.secondImageLastPenaltyAt = null;
                     lobby.gameState.powerupStage = 0;
                     lobby.gameState.activePowerups = [];
                     lobby.gameState.powerupVote = null;
@@ -1261,6 +1365,53 @@ setInterval(() => {
             broadcastState(lobbyId);
         }
 
+        // 2c. Second image (stage 3): warn at 60s, penalty every 15s after 90s
+        const gs = lobby.gameState;
+        if (lobby.gameState.phase === 'PLAYING' && gs.secondImageUploadBy && !gs.secondImageUrl) {
+            if (now >= gs.secondImageUploadBy && !gs.secondImageWarningShown) {
+                gs.secondImageWarningShown = true;
+                const setterSocket = io.sockets.sockets.get(gs.setterId);
+                if (setterSocket) setterSocket.emit('second_image_warning', { message: 'Upload second image in 30s or 1 random country will be removed every 15s.' });
+            }
+            if (now >= gs.secondImageUploadBy + 30000) {
+                const lastPenalty = gs.secondImageLastPenaltyAt || 0;
+                if (now - lastPenalty >= 15000) {
+                    gs.secondImageLastPenaltyAt = now;
+                    (async () => {
+                        const targetCode = (lobby.gameState.target.countryCode || '').toUpperCase();
+                        let cache = REST_COUNTRIES_CACHE;
+                        if (!cache) {
+                            try {
+                                const restRes = await fetchWithTimeout('https://restcountries.com/v3.1/all?fields=cca2', { headers: { 'User-Agent': 'GTC-Game/1.0' }, timeout: 15000 });
+                                if (restRes.ok) { cache = await restRes.json(); REST_COUNTRIES_CACHE = cache; }
+                            } catch (e) { console.warn('REST Countries fetch failed', e); }
+                        }
+                        const allCodes = (cache || []).map(c => (c.cca2 || '').toUpperCase()).filter(Boolean);
+                        const wrong = allCodes.filter(c => c !== targetCode && !(gs.wrongCountries || []).includes(c));
+                        if (wrong.length > 0) {
+                            const code = wrong[Math.floor(Math.random() * wrong.length)];
+                            gs.wrongCountries.push(code);
+                            try {
+                                const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${code}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, { headers: { 'User-Agent': 'GTC-Game/1.0' }, timeout: 10000 });
+                                if (polyRes.ok && gs.validPolygon) {
+                                    const polyData = await polyRes.json();
+                                    if (polyData?.[0]?.geojson) {
+                                        let countryFeat = turf.feature(polyData[0].geojson);
+                                        countryFeat = optimizeGeometry(countryFeat);
+                                        const diff = turf.difference(turf.featureCollection([gs.validPolygon, countryFeat]));
+                                        if (diff) gs.validPolygon = optimizeGeometry(diff);
+                                    }
+                                }
+                            } catch (e) { console.warn('Second image penalty country mask failed', code, e); }
+                            const setterSocket = io.sockets.sockets.get(gs.setterId);
+                            if (setterSocket) setterSocket.emit('second_image_penalty', { message: '1 random country was removed (second image not uploaded).' });
+                            broadcastState(lobbyId);
+                        }
+                    })();
+                }
+            }
+        }
+
         // 3. Setter Inactivity
         if (lobby.gameState.phase === 'SETUP_LOC' || lobby.gameState.phase === 'SETUP_IMG') {
             const timeSinceSet = now - lobby.setterAssignedAt;
@@ -1290,7 +1441,11 @@ setInterval(() => {
                         lobby.gameState.image = null;
                         lobby.gameState.guesses = [];
                         lobby.gameState.validPolygon = null;
-                        lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                        lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null, coastal: null };
+                        lobby.gameState.secondImageUploadBy = null;
+                        lobby.gameState.secondImageUrl = null;
+                        lobby.gameState.secondImageWarningShown = false;
+                        lobby.gameState.secondImageLastPenaltyAt = null;
                         lobby.gameState.powerupStage = 0;
                         lobby.gameState.activePowerups = [];
                         lobby.gameState.powerupVote = null;

@@ -1,6 +1,6 @@
 # Patch Notes
 
-## v1.5.0
+## v1.6.0
 
 - **Powerup voting system**: Replaced the old 3 fixed hints (hemisphere/continent/country) with 5 stages. At stages 1–4, the server draws 2 powerups from a pool; guessers vote for 10 seconds via animated cards on the map; the winner is applied to all. Stage 5 always reveals the country (no vote). You must vote (or wait for the timer) before guessing again when a stage unlocks.
 - **Lobby settings**: Create lobby now has 5 inputs for when each stage triggers (Stage 1–4 powerups and Country reveal), with defaults 20, 40, 60, 80, 100 guesses.
@@ -8,6 +8,17 @@
 - **Radar**: When a radar powerup wins, a random guesser is chosen to place a pin on the map; the server returns the scan area and it is shown as a green overlay. Custom radar lets the placer choose radius (client sends radius; 750 km radar uses a fixed radius).
 - **City name hint**: Powerups can reveal the number of letters in the city name and then reveal 1 or 2 random letters; shown as "City name: _ _ _ _ _" in the lower-left of the map.
 - **Continent hint removed**: The old continent hint (which could load forever) is removed; hemisphere and country are now only revealed via powerups or stage 5.
+- **Play font**: All text on the site now uses the Play font.
+- **Powerup vote UI**: Vote cards fade in once (no flashing); countdown shows 10–9–8… above the cards; vote counts update in place without re-animating.
+- **Radar placement pins**: Radar and other placeable items appear as clickable pins in the bottom-left of the map; click a pin then click the map to place it.
+- **Guess cooldown visibility**: During cooldown the Guess button is replaced by a countdown number (e.g. 5, 4, 3…) that updates every second; the input stays disabled.
+- **Slow guess logging**: If a guess takes 3s or more to register, the server logs a reason (e.g. Nominatim no results, duplicate, or processing delay) and the client logs possible causes (queue backlog, API, network, server processing).
+- **Second image (default)**: When 50% of the allowed guesses (to hider victory) have been used, the hider must upload a second image within 60s (then 30s warning, then 1 random country removed every 15s until uploaded). This is always on; it is no longer a stage-3 powerup.
+- **Stage 4 – Coastal or landlocked**: New powerup option: "Coastal or landlocked?" reveals whether the **country** of the city is coastal or landlocked; shown in the Hints line with other powerup hints.
+- **Red square click to guess**: Seekers can click the red hint (city) squares on the map to submit that city name as a guess instead of typing or clicking near them.
+- **Hider victory**: New lobby setting "Hider victory (setter wins at 1.25× country threshold)". When enabled, if the setter survives until guess count reaches 1.25× the country-reveal threshold (e.g. 50 if country is at 40), the setter wins and the round ends.
+- **Scoreboard (Tab)**: The Tab player list now shows a per-lobby scoreboard: each player’s wins as hider and as guesser (count and %), total wins, this round’s guess count, total guesses, and rounds played.
+- **Lobby presets**: Create lobby has **Casual** (default) and **Competitive** presets. Casual: stages 5/10/15/20/25, FFA. Competitive: stages 20/35/50/65/80, Turn Based. Default stage inputs and game mode follow the selected preset.
 
 ## v1.4.1
 
