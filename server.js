@@ -423,13 +423,27 @@ io.on('connection', (socket) => {
                 out center tags;
             `;
             
-            // Using dynamic import for node-fetch or native fetch in Node 18+
-            const response = await fetchWithTimeout("https://overpass-api.de/api/interpreter", {
-                method: "POST", body: query,
-                headers: { 'User-Agent': 'GTC-Game/1.0' }
-            });
-            if (!response.ok) throw new Error(`Overpass API error: ${response.status}`);
-            const data = await response.json();
+            const overpassOptions = {
+                method: "POST",
+                body: query,
+                headers: { 'User-Agent': 'GTC-Game/1.0' },
+                timeout: 15000
+            };
+
+            let data;
+            try {
+                let response = await fetchWithTimeout("https://overpass-api.de/api/interpreter", overpassOptions);
+                if (!response.ok && (response.status >= 500 || response.status === 429)) {
+                    console.warn(`[set_target] Primary Overpass failed with ${response.status}, trying fallback instance...`);
+                    response = await fetchWithTimeout("https://overpass.kumi.systems/api/interpreter", overpassOptions);
+                }
+                if (!response.ok) throw new Error(`Overpass API error: ${response.status}`);
+                data = await response.json();
+            } catch (err) {
+                console.error(`[set_target] Overpass validation failed:`, err);
+                socket.emit('error', 'Location validation service is temporarily unavailable. Please try again in a few seconds or choose a different area.');
+                return;
+            }
             
             const validPlaces = data.elements.filter(n => {
                 const popStr = n.tags?.population?.replace(/,/g, '') || '0';
