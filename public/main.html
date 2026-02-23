@@ -33,6 +33,9 @@
     <!-- Socket.IO -->
     <script src="/socket.io/socket.io.js"></script>
 
+    <!-- Marked (markdown for patch notes) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.0/marked.min.js"></script>
+
     <style>
         body { margin: 0; padding: 0; overflow: hidden; font-family: 'Play', sans-serif; }
         
@@ -72,6 +75,16 @@
         .leaflet-popup-tip { display: none; }
         .leaflet-control-zoom { border: 3px solid #000 !important; box-shadow: 3px 3px 0 0 #000 !important; overflow: hidden; }
         .leaflet-control-zoom a { border: none !important; font-family: 'Play', sans-serif; font-weight: bold; }
+
+        /* Patch notes markdown */
+        .patch-notes-body h1 { font-size: 1rem; font-weight: 700; margin: 0 0 0.5rem 0; }
+        .patch-notes-body h2 { font-size: 1.125rem; font-weight: 900; margin-top: 1rem; margin-bottom: 0.5rem; }
+        .patch-notes-body h2:first-of-type { margin-top: 0; }
+        .patch-notes-body ul { list-style-type: disc; margin: 0.5rem 0; padding-left: 1.25rem; }
+        .patch-notes-body li { margin: 0.25rem 0; }
+        .patch-notes-body strong { font-weight: 700; }
+        @keyframes powerupCardIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .powerup-card { animation: powerupCardIn 0.3s ease-out; }
     </style>
 </head>
 <body class="bg-[#f5f5f0] text-black h-screen w-screen flex flex-col md:flex-row">
@@ -88,7 +101,7 @@
                 <h2 class="text-2xl font-black">Patch Notes</h2>
                 <button type="button" onclick="togglePatchNotes()" class="neo-btn bg-black text-white p-2 hover:bg-gray-800" aria-label="Close"><i data-lucide="x" class="w-5 h-5"></i></button>
             </div>
-            <div id="patch-notes-content" class="overflow-y-auto flex-1 text-left whitespace-pre-wrap font-sans text-sm text-gray-800 border border-black p-4 bg-[#f5f5f0]">
+            <div id="patch-notes-content" class="patch-notes-body overflow-y-auto flex-1 text-left font-sans text-sm text-gray-800 border border-black p-4 bg-[#f5f5f0]">
                 Loading…
             </div>
         </div>
@@ -189,11 +202,13 @@
                         </select>
                     </div>
                     <div>
-                        <label class="block font-bold mb-1">Hint Unlocks (Guesses)</label>
-                        <div class="flex gap-2">
-                            <input type="number" id="setting-hint1" value="30" class="neo-input w-1/3 p-2" placeholder="Hemisphere">
-                            <input type="number" id="setting-hint2" value="60" class="neo-input w-1/3 p-2" placeholder="Continent">
-                            <input type="number" id="setting-hint3" value="90" class="neo-input w-1/3 p-2" placeholder="Country">
+                        <label class="block font-bold mb-1">Powerup stages (guesses to unlock)</label>
+                        <div class="grid grid-cols-5 gap-1 text-xs">
+                            <div><label class="block text-gray-600">Stage 1</label><input type="number" id="setting-hint1" value="20" class="neo-input w-full p-1" min="1"></div>
+                            <div><label class="block text-gray-600">Stage 2</label><input type="number" id="setting-hint2" value="40" class="neo-input w-full p-1" min="1"></div>
+                            <div><label class="block text-gray-600">Stage 3</label><input type="number" id="setting-hint3" value="60" class="neo-input w-full p-1" min="1"></div>
+                            <div><label class="block text-gray-600">Stage 4</label><input type="number" id="setting-hint4" value="80" class="neo-input w-full p-1" min="1"></div>
+                            <div><label class="block text-gray-600">Country</label><input type="number" id="setting-hint5" value="100" class="neo-input w-full p-1" min="1"></div>
                         </div>
                     </div>
                     <div>
@@ -336,7 +351,18 @@
     </aside>
 
     <!-- Map Container -->
-    <main id="map" class="flex-1 h-1/2 md:h-full relative z-[0] order-1 md:order-2 bg-[#e5e7eb] cursor-crosshair border-l-4 border-black"></main>
+    <main id="map" class="flex-1 h-1/2 md:h-full relative z-[0] order-1 md:order-2 bg-[#e5e7eb] cursor-crosshair border-l-4 border-black">
+        <!-- Powerup vote overlay (animated cards) -->
+        <div id="powerup-vote-overlay" class="absolute inset-0 z-[1000] hidden flex items-center justify-center bg-black/40 p-4 pointer-events-none">
+            <div class="pointer-events-auto flex flex-col items-center gap-3 max-w-2xl w-full">
+                <div class="text-white font-black text-lg drop-shadow-lg" id="powerup-vote-title">Vote for a powerup!</div>
+                <div class="flex gap-4 w-full justify-center flex-wrap" id="powerup-vote-cards"></div>
+                <div class="text-white font-bold text-sm" id="powerup-vote-countdown">10s</div>
+            </div>
+        </div>
+        <!-- City name letters hint (lower-left) -->
+        <div id="city-name-hint" class="absolute bottom-4 left-4 z-[100] hidden bg-white/95 border-4 border-black shadow-[4px_4px_0_0_#000] p-2 font-mono text-sm font-bold max-w-[90vw]"></div>
+    </main>
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -368,19 +394,30 @@
             target: { lat: null, lon: null, name: null, countryCode: null, continent: null },
             image: null,
             guesses: [],
-            countryRevealed: false,
             wrongCountries: [], // Changed to Array for JSON serialization
             validPolygon: null, 
             hintCities: null,
             hintCitiesFetched: false,
-            hints: { hemisphere: false, continent: false, country: false },
             players: [],
             settings: {},
             turnState: { currentGuesserId: null, deadline: null },
             timeLeft: null,
             guessCooldownUntil: null,
             guessCooldownStarted: null,
-            hintLabels: { hemisphere: null, continent: null, country: null }
+            hintLabels: { hemisphere: null, continent: null, country: null },
+            powerupVote: null,
+            powerupStage: 0,
+            activePowerups: [],
+            snipingImmunityUntil: null,
+            snipingImmunityGuesserId: null,
+            cityNameLetterCount: null,
+            cityNameRevealedLetters: [],
+            scanZoneBonusKm: 0,
+            cooldownReductionSeconds: 0,
+            radarPlacementPlayerId: null,
+            radarPlacementRadiusKm: null,
+            radarPlacementEndAt: null,
+            radarResultPolygon: null
         };
 
         // --- Map Variables ---
@@ -391,6 +428,7 @@
         let redCirclesLayer = L.layerGroup();
         let maskLayers = L.layerGroup();
         let hintMarkersLayer = L.layerGroup();
+        let radarResultLayer = L.layerGroup();
 
         // --- Initialization ---
         document.addEventListener('DOMContentLoaded', () => {
@@ -462,6 +500,18 @@
                 if (newState.guessCooldownUntil !== undefined) state.guessCooldownUntil = newState.guessCooldownUntil;
                 if (newState.guessCooldownStarted !== undefined) state.guessCooldownStarted = newState.guessCooldownStarted;
                 if (newState.hintLabels) state.hintLabels = newState.hintLabels;
+                if (newState.powerupVote !== undefined) state.powerupVote = newState.powerupVote;
+                if (newState.powerupStage !== undefined) state.powerupStage = newState.powerupStage;
+                if (newState.activePowerups) state.activePowerups = newState.activePowerups;
+                if (newState.snipingImmunityUntil !== undefined) state.snipingImmunityUntil = newState.snipingImmunityUntil;
+                if (newState.snipingImmunityGuesserId !== undefined) state.snipingImmunityGuesserId = newState.snipingImmunityGuesserId;
+                if (newState.cityNameLetterCount !== undefined) state.cityNameLetterCount = newState.cityNameLetterCount;
+                if (newState.cityNameRevealedLetters) state.cityNameRevealedLetters = newState.cityNameRevealedLetters;
+                if (newState.scanZoneBonusKm !== undefined) state.scanZoneBonusKm = newState.scanZoneBonusKm;
+                if (newState.radarPlacementPlayerId !== undefined) state.radarPlacementPlayerId = newState.radarPlacementPlayerId;
+                if (newState.radarPlacementRadiusKm !== undefined) state.radarPlacementRadiusKm = newState.radarPlacementRadiusKm;
+                if (newState.radarPlacementEndAt !== undefined) state.radarPlacementEndAt = newState.radarPlacementEndAt;
+                if (newState.radarResultPolygon !== undefined) state.radarResultPolygon = newState.radarResultPolygon;
                 
                 // Determine my role
                 const me = state.players.find(p => p.id === socket.id);
@@ -470,9 +520,11 @@
                 // Sync Map
                 syncMapState();
                 renderUI();
+                updatePowerupVoteOverlay();
+                updateCityNameHint();
                 
-                // When server reveals country hint, zoom map to fit the revealed country
-                if (newState.hints?.country && newState.validPolygon && typeof turf !== 'undefined') {
+                // When server reveals country, zoom map to fit the revealed country
+                if (newState.hintLabels?.country && newState.validPolygon && typeof turf !== 'undefined') {
                     try {
                         const b = turf.bbox(state.validPolygon);
                         if (map && b && b.length >= 4) map.fitBounds([[b[1], b[0]], [b[3], b[2]]], { padding: [20, 20] });
@@ -604,7 +656,7 @@
                     try {
                         const res = await fetch('/PATCH_NOTES.md');
                         const text = await res.text();
-                        content.textContent = text;
+                        content.innerHTML = typeof marked !== 'undefined' ? marked.parse(text) : text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
                         patchNotesLoaded = true;
                     } catch (e) {
                         content.textContent = 'Could not load patch notes.';
@@ -660,7 +712,9 @@
                 hintThresholds: [
                     document.getElementById('setting-hint1').value,
                     document.getElementById('setting-hint2').value,
-                    document.getElementById('setting-hint3').value
+                    document.getElementById('setting-hint3').value,
+                    document.getElementById('setting-hint4').value,
+                    document.getElementById('setting-hint5').value
                 ],
                 password: document.getElementById('setting-password').value.trim() || null,
                 gameMode: document.getElementById('setting-gamemode').value,
@@ -741,11 +795,13 @@
             guessMarkersLayer.clearLayers();
             redCirclesLayer.clearLayers();
             maskLayers.clearLayers();
+            radarResultLayer.clearLayers();
             if (targetMarker) { map.removeLayer(targetMarker); targetMarker = null; }
             if (victoryMarker) { map.removeLayer(victoryMarker); victoryMarker = null; }
 
             // Draw Guesses & Red Circles
-            const thresholds = [250, 100, 50, 20, 10, 5];
+            const baseScanKm = 250 + (state.scanZoneBonusKm || 0);
+            const thresholds = [baseScanKm, 100, 50, 20, 10, 5];
             state.guesses.forEach(g => {
                 const m = L.marker([g.lat, g.lon]).addTo(guessMarkersLayer);
                 m.bindPopup(`<b>${g.nickname}</b>: ${g.name}`);
@@ -776,6 +832,15 @@
                 updateHintMarkers();
             } else {
                 hintMarkersLayer.clearLayers();
+            }
+
+            // Draw radar result (powerup)
+            if (state.radarResultPolygon) {
+                try {
+                    L.geoJSON(state.radarResultPolygon, {
+                        style: { color: '#22c55e', fillColor: '#22c55e', fillOpacity: 0.35, weight: 3 }
+                    }).addTo(radarResultLayer);
+                } catch (e) {}
             }
 
             // Draw Target (if allowed)
@@ -830,6 +895,7 @@
             redCirclesLayer.addTo(map);
             maskLayers.addTo(map);
             hintMarkersLayer.addTo(map);
+            radarResultLayer.addTo(map);
 
             map.on('click', handleMapClick);
             map.on('zoomend', updateHintMarkers);
@@ -902,8 +968,14 @@
                 return;
             }
 
-            // Guesser Logic (Click to guess)
+            // Guesser Logic (Click to guess or place radar)
             if (myRole === 'guesser' && state.phase === GameState.PLAYING) {
+                if (state.radarPlacementPlayerId === socket.id) {
+                    const radiusKm = state.radarPlacementRadiusKm != null ? state.radarPlacementRadiusKm : 500;
+                    socket.emit('place_radar', { lobbyId: myLobbyId, lat, lon, radiusKm });
+                    showToast('Radar placed!', 'info');
+                    return;
+                }
                 // Add Pinpoint
                 if (tempGuessMarker) map.removeLayer(tempGuessMarker);
                 const icon = L.divIcon({
@@ -1031,13 +1103,14 @@
 
             let newPoly = state.validPolygon;
 
-            if (isSameCountry && !state.countryRevealed) {
+            if (isSameCountry && !(state.hintLabels && state.hintLabels.country)) {
                 revealCountry(state.target.countryCode); 
             } else if (!isSameCountry && countryCode) {
                 maskWrongCountry(countryCode); 
             }
 
-            const thresholds = [250, 100, 50, 20, 10, 5];
+            const baseScanKm = 250 + (state.scanZoneBonusKm || 0);
+            const thresholds = [baseScanKm, 100, 50, 20, 10, 5];
             
             let max_T = 0;
             for (let t of thresholds) {
@@ -1079,11 +1152,11 @@
             state.validPolygon = newPoly;
             redrawUnifiedMasks();
 
-            if (!state.countryRevealed) {
+            if (!(state.hintLabels && state.hintLabels.country)) {
                 if (dist < 20) map.setView([lat, lon], 11);
                 else if (dist < 50) map.setView([lat, lon], 9);
                 else if (dist < 100) map.setView([lat, lon], 8);
-                else if (dist < 250) map.setView([lat, lon], 7);
+                else if (dist < (250 + (state.scanZoneBonusKm || 0))) map.setView([lat, lon], 7);
                 else map.setView([lat, lon], 5);
             } else {
                 map.panTo([lat, lon]);
@@ -1091,10 +1164,11 @@
 
             renderUI();
             
-            if (isSameCountry && dist > 250) showToast("Same country! Map restricted.", "info");
+            const outerKm = 250 + (state.scanZoneBonusKm || 0);
+            if (isSameCountry && dist > outerKm) showToast("Same country! Map restricted.", "info");
             else if (dist <= 10) showToast("Incredibly close! Less than 10km!", "info");
             else if (dist <= 50) showToast("Very close! Within 50km.", "info");
-            else if (dist <= 250) showToast(`Getting warmer! Guess constrained.`, "info");
+            else if (dist <= outerKm) showToast(`Getting warmer! Guess constrained.`, "info");
         }
 
         // --- Unlockable Hints ---
@@ -1116,7 +1190,66 @@
              // I will leave the UI buttons but they won't do anything server-side yet unless I add the event.
              // To strictly follow the plan, I won't add new server events not in the plan.
              // I'll just disable them or show a "Coming soon" toast.
-             showToast("Hints are managed by the server in multiplayer.", "info");
+             showToast("Powerups are chosen by vote each stage.", "info");
+        }
+
+        let powerupVoteCountdownInterval = null;
+        function updatePowerupVoteOverlay() {
+            const overlay = document.getElementById('powerup-vote-overlay');
+            const cardsEl = document.getElementById('powerup-vote-cards');
+            const countdownEl = document.getElementById('powerup-vote-countdown');
+            if (!overlay || !cardsEl) return;
+            const vote = state.powerupVote;
+            if (!vote || !vote.options || vote.options.length === 0) {
+                overlay.classList.add('hidden');
+                if (powerupVoteCountdownInterval) { clearInterval(powerupVoteCountdownInterval); powerupVoteCountdownInterval = null; }
+                return;
+            }
+            overlay.classList.remove('hidden');
+            const votedBy = vote.votedBy || {};
+            const myVote = votedBy[socket.id];
+            const canVote = myRole === 'guesser' && myVote === undefined;
+            cardsEl.innerHTML = vote.options.map(opt => {
+                const votes = (vote.votes && vote.votes[opt.id]) || 0;
+                const isMyVote = myVote === opt.id;
+                return `
+                    <div class="powerup-card bg-white border-4 border-black shadow-[6px_6px_0_0_#000] p-4 flex-1 min-w-[180px] max-w-[240px]">
+                        <div class="font-black text-sm mb-1">${opt.label}</div>
+                        <div class="text-xs text-gray-600 mb-3">${opt.description}</div>
+                        <div class="text-xs font-bold mb-2">Votes: ${votes}</div>
+                        ${canVote ? `<button type="button" onclick="votePowerup('${opt.id.replace(/'/g, "\\'")}')" class="neo-btn w-full py-2 bg-[#22c55e] text-black font-bold text-xs">Vote</button>` : isMyVote ? '<span class="text-xs font-bold text-green-600">You voted</span>' : ''}
+                    </div>`;
+            }).join('');
+            function updateCountdown() {
+                if (!countdownEl || !vote.endAt) return;
+                const left = Math.max(0, Math.ceil((vote.endAt - Date.now()) / 1000));
+                countdownEl.textContent = left + 's';
+                if (left <= 0 && powerupVoteCountdownInterval) { clearInterval(powerupVoteCountdownInterval); powerupVoteCountdownInterval = null; }
+            }
+            updateCountdown();
+            if (!powerupVoteCountdownInterval) powerupVoteCountdownInterval = setInterval(function() { updateCountdown(); if (state.powerupVote && state.powerupVote.endAt && Date.now() >= state.powerupVote.endAt) updatePowerupVoteOverlay(); }, 500);
+            lucide.createIcons();
+        }
+        function votePowerup(powerupId) {
+            if (!myLobbyId) return;
+            socket.emit('vote_powerup', { lobbyId: myLobbyId, powerupId });
+        }
+
+        function updateCityNameHint() {
+            const el = document.getElementById('city-name-hint');
+            if (!el) return;
+            const count = state.cityNameLetterCount;
+            const revealed = state.cityNameRevealedLetters || [];
+            if (count == null || count === 0) {
+                el.classList.add('hidden');
+                return;
+            }
+            el.classList.remove('hidden');
+            const revealedMap = {};
+            revealed.forEach(r => { revealedMap[r.index] = r.letter; });
+            const arr = [];
+            for (let i = 0; i < count; i++) arr.push(revealedMap[i] != null ? revealedMap[i] : '_');
+            el.textContent = 'City name: ' + arr.join(' ');
         }
 
         // --- Unified Turf Rendering ---
@@ -1217,7 +1350,8 @@
         }
 
         async function revealCountry(countryCode) {
-            state.countryRevealed = true;
+            if (!state.hintLabels) state.hintLabels = { hemisphere: null, continent: null, country: null };
+            state.hintLabels.country = state.hintLabels.country || 'Revealed';
             showToast("Correct Country! Isolating map...", "info");
             
             try {
@@ -1320,7 +1454,7 @@
             else if (dist <= 20) badges.push({ text: '< 20km', classes: 'bg-[#fbbf24] text-black' });
             else if (dist <= 50) badges.push({ text: '< 50km', classes: 'bg-[#3b82f6] text-black' });
             else if (dist <= 100) badges.push({ text: '< 100km', classes: 'bg-[#6366f1] text-black' });
-            else if (dist <= 250) badges.push({ text: '< 250km', classes: 'bg-[#a78bfa] text-black' });
+            else if (dist <= (250 + (state.scanZoneBonusKm || 0))) badges.push({ text: '< ' + (250 + (state.scanZoneBonusKm || 0)) + 'km', classes: 'bg-[#a78bfa] text-black' });
             return badges;
         }
 
@@ -1482,6 +1616,11 @@
                 const inCooldown = isFFA && cooldownSecondsLeft > 0;
                 const cooldownProgress = (isFFA && state.guessCooldownUntil && state.guessCooldownStarted && Date.now() < state.guessCooldownUntil)
                     ? Math.min(100, Math.max(0, (Date.now() - state.guessCooldownStarted) / (state.guessCooldownUntil - state.guessCooldownStarted) * 100)) : 100;
+                const mustVote = state.powerupVote && myRole === 'guesser';
+                const mustPlaceRadar = state.radarPlacementPlayerId === socket.id;
+                const snipingBlock = state.snipingImmunityUntil && Date.now() < state.snipingImmunityUntil && state.snipingImmunityGuesserId !== socket.id;
+                const immuneNickname = state.snipingImmunityGuesserId && state.players.find(p => p.id === state.snipingImmunityGuesserId)?.nickname || 'Someone';
+                const guessDisabled = isProcessing || inCooldown || mustVote || mustPlaceRadar || snipingBlock;
                 
                 container.innerHTML = `
                     <div class="w-full aspect-video overflow-hidden border-4 border-black shadow-[4px_4px_0_0_#000] cursor-pointer relative group shrink-0" onclick="openImageModal('${state.image}')">
@@ -1515,13 +1654,16 @@
                             </p>
                         </div>
                     ` : `
+                        ${mustVote ? '<div class="mt-4 p-3 bg-[#fbbf24] border-4 border-black font-bold text-center">Vote for a powerup on the map!</div>' : ''}
+                        ${mustPlaceRadar ? '<div class="mt-4 p-3 bg-[#22c55e] border-4 border-black font-bold text-center">Click the map to place your radar pin.</div>' : ''}
+                        ${snipingBlock ? '<div class="mt-4 p-3 bg-amber-200 border-4 border-black font-bold text-center">Only ' + immuneNickname + ' can guess for ' + Math.max(0, Math.ceil((state.snipingImmunityUntil - Date.now()) / 1000)) + 's.</div>' : ''}
                         <form onsubmit="handleGuessSubmit(event)" class="mt-4 flex gap-2 shrink-0 ${isSetter ? 'hidden' : ''}">
                             <div class="relative flex-1">
                                 <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 w-5 h-5"></i>
-                                <input type="text" id="guess-input" placeholder="${isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${(isProcessing || inCooldown) ? 'disabled' : ''}>
+                                <input type="text" id="guess-input" placeholder="${mustPlaceRadar ? 'Place radar first...' : mustVote ? 'Vote first...' : isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${guessDisabled ? 'disabled' : ''}>
                             </div>
-                            <button type="submit" id="guess-btn" class="neo-btn relative overflow-hidden bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px] ${inCooldown ? 'opacity-80 cursor-not-allowed' : ''}" ${(isProcessing || inCooldown) ? 'disabled' : ''}>
-                                ${inCooldown ? `<span class="relative z-10">${cooldownSecondsLeft}s</span><span class="absolute bottom-0 left-0 h-1 bg-green-500 transition-all duration-1000" style="width:${cooldownProgress}%"></span>` : isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
+                            <button type="submit" id="guess-btn" class="neo-btn relative overflow-hidden bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px] ${guessDisabled ? 'opacity-80 cursor-not-allowed' : ''}" ${guessDisabled ? 'disabled' : ''}>
+                                ${inCooldown ? `<span class="relative z-10">${cooldownSecondsLeft}s</span><span class="absolute bottom-0 left-0 h-1 bg-green-500 transition-all duration-1000" style="width:${cooldownProgress}%"></span>` : mustPlaceRadar ? 'Place radar' : mustVote ? 'Vote first' : isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
                             </button>
                         </form>
                     `}
@@ -1533,40 +1675,32 @@
                         ${state.target?.name ? `<div class="mt-2 bg-white p-2 border-2 border-black text-center text-sm font-bold">Location: ${state.target.name}</div>` : ''}
                     ` : ''}
 
-                    <!-- Powerups Progress (Sticky) -->
+                    <!-- Stage progress (5 powerup stages) -->
                     <div class="mt-4 bg-gray-100 p-2 border-2 border-black text-xs shrink-0">
                         <div class="flex justify-between font-bold mb-1">
-                            <span>Hints Unlock:</span>
+                            <span>Stages:</span>
                             <span>${state.guesses.length} Guesses</span>
                         </div>
-                        <div class="flex gap-1 h-2 mb-1">
+                        <div class="flex gap-0.5 h-2 mb-1">
                             ${(() => {
-                                const t0 = state.settings?.hintThresholds?.[0] || 30;
-                                const t1 = state.settings?.hintThresholds?.[1] || 60;
-                                const t2 = state.settings?.hintThresholds?.[2] || 90;
+                                const th = state.settings?.hintThresholds || [20,40,60,80,100];
                                 const g = state.guesses.length;
-                                const p1 = Math.min(100, (g / t0) * 100);
-                                const p2 = g < t0 ? 0 : Math.min(100, ((g - t0) / (t1 - t0)) * 100);
-                                const p3 = g < t1 ? 0 : Math.min(100, ((g - t1) / (t2 - t1)) * 100);
-                                return `
-                                <div class="flex-1 bg-white border border-black overflow-hidden"><div class="h-full bg-green-500 transition-[width] duration-300 ease-out" style="width:${p1}%"></div></div>
-                                <div class="flex-1 bg-white border border-black overflow-hidden"><div class="h-full bg-green-500 transition-[width] duration-300 ease-out" style="width:${p2}%"></div></div>
-                                <div class="flex-1 bg-white border border-black overflow-hidden"><div class="h-full bg-green-500 transition-[width] duration-300 ease-out" style="width:${p3}%"></div></div>`;
+                                const stage = state.powerupStage || 0;
+                                return [0,1,2,3,4].map(i => {
+                                    const t = th[i] || 20*(i+1);
+                                    const done = stage > i || (i === 4 && stage >= 5);
+                                    const p = i === 0 ? Math.min(100, (g / t) * 100) : g < th[i-1] ? 0 : Math.min(100, ((g - th[i-1]) / (t - th[i-1])) * 100);
+                                    return `<div class="flex-1 bg-white border border-black overflow-hidden" title="Stage ${i+1} at ${t}"><div class="h-full ${done ? 'bg-green-600' : 'bg-green-500'} transition-[width] duration-300 ease-out" style="width:${done ? 100 : p}%"></div></div>`;
+                                }).join('');
                             })()}
                         </div>
-                        <div class="flex justify-between text-[10px] text-gray-600 font-bold">
-                            <div class="text-center w-1/3">
-                                <span>${state.hints?.hemisphere ? (state.hintLabels?.hemisphere || 'Northern/Southern').toUpperCase() : (state.settings?.hintThresholds?.[0] || 30)}</span><br>
-                                <span class="text-[9px] uppercase">${state.hints?.hemisphere ? '' : 'Hemisphere'}</span>
-                            </div>
-                            <div class="text-center w-1/3">
-                                <span>${state.hints?.continent ? (state.hintLabels?.continent || 'Continent').toUpperCase() : (state.settings?.hintThresholds?.[1] || 60)}</span><br>
-                                <span class="text-[9px] uppercase">${state.hints?.continent ? '' : 'Continent'}</span>
-                            </div>
-                            <div class="text-center w-1/3">
-                                <span>${state.hints?.country ? (state.hintLabels?.country || 'Country').toUpperCase() : (state.settings?.hintThresholds?.[2] || 90)}</span><br>
-                                <span class="text-[9px] uppercase">${state.hints?.country ? '' : 'Country'}</span>
-                            </div>
+                        <div class="flex justify-between text-[9px] text-gray-600 font-bold">
+                            ${[0,1,2,3,4].map(i => {
+                                const th = state.settings?.hintThresholds || [20,40,60,80,100];
+                                const label = i < 4 ? `P${i+1}` : 'Country';
+                                const t = th[i];
+                                return `<span>${label} @${t}</span>`;
+                            }).join('')}
                         </div>
                     </div>
 

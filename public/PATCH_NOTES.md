@@ -1,5 +1,14 @@
 # Patch Notes
 
+## v1.5.0
+
+- **Powerup voting system**: Replaced the old 3 fixed hints (hemisphere/continent/country) with 5 stages. At stages 1–4, the server draws 2 powerups from a pool; guessers vote for 10 seconds via animated cards on the map; the winner is applied to all. Stage 5 always reveals the country (no vote). You must vote (or wait for the timer) before guessing again when a stage unlocks.
+- **Lobby settings**: Create lobby now has 5 inputs for when each stage triggers (Stage 1–4 powerups and Country reveal), with defaults 20, 40, 60, 80, 100 guesses.
+- **Powerup effects**: Remove 4/5 random countries, increase scan zone (+10/15/75/100 km, stacks), lower guess cooldown (−1 s, stacks), sniping immunity (only the guesser who revealed the country can guess for 15 s), reveal letter count and 1/2 random letters, reveal hemisphere, 750 km or custom-size radar (random player places pin), and automatic country reveal at stage 5.
+- **Radar**: When a radar powerup wins, a random guesser is chosen to place a pin on the map; the server returns the scan area and it is shown as a green overlay. Custom radar lets the placer choose radius (client sends radius; 750 km radar uses a fixed radius).
+- **City name hint**: Powerups can reveal the number of letters in the city name and then reveal 1 or 2 random letters; shown as "City name: _ _ _ _ _" in the lower-left of the map.
+- **Continent hint removed**: The old continent hint (which could load forever) is removed; hemisphere and country are now only revealed via powerups or stage 5.
+
 ## v1.4.1
 
 - **Win condition**: Only the **exact location** (same OSM place) counts as a win. Guessing a nearby city (e.g. 1 km away) no longer wins; you must guess the same place the setter chose (matched by Nominatim `place_id`). Rules text updated to "First to guess the exact location (same place) wins!"
@@ -9,6 +18,7 @@
 - **Hint progress bar**: The three segments now fill by **percentage** toward each threshold (animated, synced to guess count).
 - **Zoom to country**: When the country hint is revealed (by server at 90 guesses or same-country guess), the map zooms to fit the revealed country.
 - **Setter UI**: Removed "Current Guesses: N". The setter now sees **Location: &lt;name&gt;** (the name of the place they set) under "You are the Setter."
+- **Changelog formatting**: Patch notes modal now renders Markdown (headings, bold, lists) instead of plain text.
 
 ## v1.4.0
 

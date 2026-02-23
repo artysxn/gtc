@@ -94,19 +94,218 @@ const INITIAL_GAME_STATE = {
     image: null,
     guesses: [],
     validPolygon: null, // Starts as null, becomes world polygon on first guess
-    hints: { hemisphere: false, continent: false, country: false },
-    hintLabels: { hemisphere: null, continent: null, country: null },
+    hintLabels: { hemisphere: null, continent: null, country: null }, // Used by powerups (hemisphere, country reveal)
     winnerId: null,
-    wrongCountries: [] // Array of country codes
+    wrongCountries: [], // Array of country codes
+    // Powerup voting system (5 stages)
+    powerupStage: 0,           // 0 = none, 1-4 = powerup stages, 5 = country revealed
+    activePowerups: [],        // Applied powerup IDs for stacking/conditionals
+    powerupVote: null,         // { options: [{ id, label, description }], endAt, votes: { [powerupId]: count }, votedBy: { [playerId]: powerupId } }
+    powerupVoteTimer: null,    // setTimeout handle to clear
+    snipingImmunityUntil: null,
+    snipingImmunityGuesserId: null,
+    cityNameLetterCount: null,
+    cityNameRevealedLetters: [], // [{ index, letter }]
+    scanZoneBonusKm: 0,
+    cooldownReductionSeconds: 0,
+    radarPlacementPlayerId: null,
+    radarPlacementRadiusKm: null, // 750 or custom
+    radarPlacementEndAt: null,
+    radarResultPolygon: null
 };
 
 const DEFAULT_SETTINGS = {
     minPop: 5000,
-    hintThresholds: [30, 60, 90], // Guesses needed for hints
+    hintThresholds: [20, 40, 60, 80, 100], // 5 stages: powerup 1–4, then country reveal
     password: null,
     gameMode: 'ffa', // 'ffa' or 'turn_based'
     moveTimeLimit: 0 // Seconds, 0 = off
 };
+
+// Powerup IDs (used for conditionals and activePowerups)
+const POWERUP_IDS = {
+    REMOVE_4_COUNTRIES: 'remove_4_countries',
+    REMOVE_5_COUNTRIES: 'remove_5_countries',
+    SCAN_ZONE_10: 'scan_zone_10',
+    SCAN_ZONE_15: 'scan_zone_15',
+    SCAN_ZONE_75: 'scan_zone_75',
+    SCAN_ZONE_100: 'scan_zone_100',
+    COOLDOWN_1: 'cooldown_1',
+    SNIPING_IMMUNITY: 'sniping_immunity',
+    RADAR_750: 'radar_750',
+    RADAR_CUSTOM: 'radar_custom',
+    REVEAL_LETTER_COUNT: 'reveal_letter_count',
+    REVEAL_ONE_LETTER: 'reveal_one_letter',
+    REVEAL_TWO_LETTERS: 'reveal_two_letters',
+    REVEAL_HEMISPHERE: 'reveal_hemisphere',
+    REVEAL_COUNTRY: 'reveal_country'
+};
+
+// Stage 1–4 pools: { id, label, description }. Condition: (gameState) => boolean to include in draw.
+const POWERUP_POOLS = [
+    [ // Stage 1
+        { id: POWERUP_IDS.REMOVE_4_COUNTRIES, label: 'Remove 4 countries', description: '4 wrong countries grayed out.' },
+        { id: POWERUP_IDS.SCAN_ZONE_10, label: 'Scan +10 km', description: 'Search radius 260 km (was 250).' },
+        { id: POWERUP_IDS.COOLDOWN_1, label: 'Cooldown -1 s', description: 'Guess cooldown reduced by 1 second.' },
+        { id: POWERUP_IDS.SNIPING_IMMUNITY, label: 'Sniping immunity', description: 'After country revealed by a guess, only that guesser can guess for 15 s.' }
+    ],
+    [ // Stage 2
+        { id: POWERUP_IDS.REMOVE_5_COUNTRIES, label: 'Remove 5 countries', description: '5 wrong countries grayed out.' },
+        { id: POWERUP_IDS.SCAN_ZONE_15, label: 'Scan +15 km', description: 'Search radius +15 km. Stacks.' },
+        { id: POWERUP_IDS.COOLDOWN_1, label: 'Cooldown -1 s', description: 'Stacks.' },
+        { id: POWERUP_IDS.RADAR_750, label: '1× 750 km radar', description: 'Random player places a pin; 750 km scan for all.' },
+        { id: POWERUP_IDS.REVEAL_LETTER_COUNT, label: 'Letters in city name', description: 'Shows underscores: City name: _ _ _ _ _' }
+    ],
+    [ // Stage 3
+        { id: POWERUP_IDS.RADAR_CUSTOM, label: '1× Custom radar', description: 'Random player places pin and scalable circle.' },
+        { id: POWERUP_IDS.SCAN_ZONE_75, label: 'Scan +75 km', description: 'Stacks.' },
+        { id: POWERUP_IDS.COOLDOWN_1, label: 'Cooldown -1 s', description: 'Stacks.' },
+        { id: POWERUP_IDS.REVEAL_HEMISPHERE, label: 'Reveal hemisphere', description: 'North or South?' },
+        { id: POWERUP_IDS.REVEAL_ONE_LETTER, label: 'Reveal 1 letter', description: 'Only if letter count was selected.', condition: (gs) => gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.REVEAL_LETTER_COUNT) }
+    ],
+    [ // Stage 4
+        { id: POWERUP_IDS.RADAR_CUSTOM, label: '1× Custom radar', description: 'Random player places pin and scalable circle.' },
+        { id: POWERUP_IDS.SCAN_ZONE_100, label: 'Scan +100 km', description: 'Stacks.' },
+        { id: POWERUP_IDS.REVEAL_TWO_LETTERS, label: 'Reveal 2 letters', description: 'Only if letter count was selected.', condition: (gs) => gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.REVEAL_LETTER_COUNT) }
+    ]
+];
+
+function drawTwoFromPool(stageIndex, gameState) {
+    const pool = POWERUP_POOLS[stageIndex];
+    if (!pool) return [];
+    const eligible = pool.filter(p => !p.condition || p.condition(gameState));
+    if (eligible.length <= 2) return eligible.map(p => ({ id: p.id, label: p.label, description: p.description }));
+    const shuffled = [...eligible].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, 2).map(p => ({ id: p.id, label: p.label, description: p.description }));
+}
+
+async function finishPowerupVote(lobbyId) {
+    const lobby = getLobby(lobbyId);
+    if (!lobby || !lobby.gameState.powerupVote) return;
+    if (lobby.powerupVoteTimer) {
+        clearTimeout(lobby.powerupVoteTimer);
+        lobby.powerupVoteTimer = null;
+    }
+    const vote = lobby.gameState.powerupVote;
+    const options = vote.options;
+    const votes = vote.votes || {};
+    let bestCount = 0;
+    const winners = [];
+    for (const opt of options) {
+        const c = votes[opt.id] || 0;
+        if (c > bestCount) { bestCount = c; winners.length = 0; winners.push(opt.id); }
+        else if (c === bestCount && c > 0) winners.push(opt.id);
+    }
+    const winnerId = winners.length === 0 ? options[0].id : winners[Math.floor(Math.random() * winners.length)];
+    lobby.gameState.powerupVote = null;
+    lobby.gameState.powerupStage++;
+    await applyPowerup(lobbyId, winnerId, lobby.gameState.powerupStage - 1);
+}
+
+async function applyPowerup(lobbyId, powerupId, stageIndex) {
+    const lobby = getLobby(lobbyId);
+    if (!lobby) return;
+    const gs = lobby.gameState;
+    if (!gs.activePowerups) gs.activePowerups = [];
+    gs.activePowerups.push(powerupId);
+
+    if (powerupId === POWERUP_IDS.SCAN_ZONE_10) gs.scanZoneBonusKm = (gs.scanZoneBonusKm || 0) + 10;
+    else if (powerupId === POWERUP_IDS.SCAN_ZONE_15) gs.scanZoneBonusKm = (gs.scanZoneBonusKm || 0) + 15;
+    else if (powerupId === POWERUP_IDS.SCAN_ZONE_75) gs.scanZoneBonusKm = (gs.scanZoneBonusKm || 0) + 75;
+    else if (powerupId === POWERUP_IDS.SCAN_ZONE_100) gs.scanZoneBonusKm = (gs.scanZoneBonusKm || 0) + 100;
+    else if (powerupId === POWERUP_IDS.COOLDOWN_1) gs.cooldownReductionSeconds = (gs.cooldownReductionSeconds || 0) + 1;
+    else if (powerupId === POWERUP_IDS.REVEAL_LETTER_COUNT && lobby.gameState.target && lobby.gameState.target.name) {
+        gs.cityNameLetterCount = lobby.gameState.target.name.length;
+    }
+    else if (powerupId === POWERUP_IDS.REVEAL_ONE_LETTER && lobby.gameState.target && lobby.gameState.target.name) {
+        const name = lobby.gameState.target.name;
+        const indices = [];
+        for (let i = 0; i < name.length; i++) if (name[i] !== ' ') indices.push(i);
+        const already = (gs.cityNameRevealedLetters || []).map(r => r.index);
+        const left = indices.filter(i => !already.includes(i));
+        if (left.length > 0) {
+            const idx = left[Math.floor(Math.random() * left.length)];
+            if (!gs.cityNameRevealedLetters) gs.cityNameRevealedLetters = [];
+            gs.cityNameRevealedLetters.push({ index: idx, letter: name[idx] });
+        }
+    }
+    else if (powerupId === POWERUP_IDS.REVEAL_TWO_LETTERS && lobby.gameState.target && lobby.gameState.target.name) {
+        const name = lobby.gameState.target.name;
+        const indices = [];
+        for (let i = 0; i < name.length; i++) if (name[i] !== ' ') indices.push(i);
+        const already = (gs.cityNameRevealedLetters || []).map(r => r.index);
+        const left = indices.filter(i => !already.includes(i));
+        if (!gs.cityNameRevealedLetters) gs.cityNameRevealedLetters = [];
+        for (let n = 0; n < 2 && left.length > 0; n++) {
+            const idx = left.splice(Math.floor(Math.random() * left.length), 1)[0];
+            gs.cityNameRevealedLetters.push({ index: idx, letter: name[idx] });
+        }
+    }
+    else if (powerupId === POWERUP_IDS.REVEAL_HEMISPHERE) {
+        if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null };
+        gs.hintLabels.hemisphere = lobby.gameState.target.lat >= 0 ? 'Northern' : 'Southern';
+        if (gs.validPolygon) {
+            const isNorth = lobby.gameState.target.lat >= 0;
+            const badHemisphere = isNorth ? turf.bboxPolygon([-180, -90, 180, 0]) : turf.bboxPolygon([-180, 0, 180, 90]);
+            try {
+                const diff = turf.difference(turf.featureCollection([gs.validPolygon, badHemisphere]));
+                if (diff) gs.validPolygon = optimizeGeometry(diff);
+            } catch (e) { console.error("Hemisphere mask error", e); }
+        }
+    }
+    else if (powerupId === POWERUP_IDS.RADAR_750) {
+        const guessers = lobby.players.filter(p => p.id !== gs.setterId);
+        if (guessers.length > 0) {
+            const pick = guessers[Math.floor(Math.random() * guessers.length)];
+            gs.radarPlacementPlayerId = pick.id;
+            gs.radarPlacementRadiusKm = 750;
+            gs.radarPlacementEndAt = Date.now() + 10000;
+        }
+    }
+    else if (powerupId === POWERUP_IDS.RADAR_CUSTOM) {
+        const guessers = lobby.players.filter(p => p.id !== gs.setterId);
+        if (guessers.length > 0) {
+            const pick = guessers[Math.floor(Math.random() * guessers.length)];
+            gs.radarPlacementPlayerId = pick.id;
+            gs.radarPlacementRadiusKm = null;
+            gs.radarPlacementEndAt = Date.now() + 15000;
+        }
+    }
+    else if (powerupId === POWERUP_IDS.SNIPING_IMMUNITY) { /* applied on same-country guess */ }
+    else if (powerupId === POWERUP_IDS.REMOVE_4_COUNTRIES || powerupId === POWERUP_IDS.REMOVE_5_COUNTRIES) {
+        const n = powerupId === POWERUP_IDS.REMOVE_4_COUNTRIES ? 4 : 5;
+        const targetCode = (lobby.gameState.target.countryCode || '').toUpperCase();
+        if (!REST_COUNTRIES_CACHE) {
+            try {
+                const restRes = await fetchWithTimeout('https://restcountries.com/v3.1/all?fields=cca2', { headers: { 'User-Agent': 'GTC-Game/1.0' }, timeout: 15000 });
+                if (restRes.ok) REST_COUNTRIES_CACHE = await restRes.json();
+            } catch (e) { console.warn('REST Countries fetch failed', e); }
+        }
+        const allCodes = (REST_COUNTRIES_CACHE || []).map(c => (c.cca2 || '').toUpperCase()).filter(Boolean);
+        const wrong = allCodes.filter(c => c !== targetCode && !(gs.wrongCountries || []).includes(c));
+        const toRemove = [];
+        for (let i = 0; i < n && wrong.length > 0; i++) {
+            const idx = Math.floor(Math.random() * wrong.length);
+            toRemove.push(wrong.splice(idx, 1)[0]);
+        }
+        for (const code of toRemove) {
+            gs.wrongCountries.push(code);
+            try {
+                const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${code}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, { headers: { 'User-Agent': 'GTC-Game/1.0' }, timeout: 10000 });
+                if (polyRes.ok && gs.validPolygon) {
+                    const polyData = await polyRes.json();
+                    if (polyData?.[0]?.geojson) {
+                        let countryFeat = turf.feature(polyData[0].geojson);
+                        countryFeat = optimizeGeometry(countryFeat);
+                        const diff = turf.difference(turf.featureCollection([gs.validPolygon, countryFeat]));
+                        if (diff) gs.validPolygon = optimizeGeometry(diff);
+                    }
+                }
+            } catch (e) { console.warn('Remove country polygon failed', code, e); }
+        }
+    }
+    broadcastState(lobbyId);
+}
 
 // Countries that span multiple continents, normalized to a single one for game logic
 const CONTINENT_OVERRIDES = {
@@ -170,9 +369,7 @@ function broadcastState(lobbyId) {
 
         const sanitizedState = {
             ...fullState,
-            // Hide target details if not setter and not won
-            target: (isSetter || isWon) ? fullState.target : { lat: null, lon: null, name: null },
-            // Players list for UI
+            target: (isSetter || isWon) ? fullState.target : { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null },
             players: lobby.players,
             myRole: isSetter ? 'setter' : 'guesser',
             settings: lobby.settings,
@@ -180,7 +377,20 @@ function broadcastState(lobbyId) {
             turnState: lobby.turnState,
             timeLeft: lobby.turnState.deadline ? Math.max(0, Math.ceil((lobby.turnState.deadline - Date.now()) / 1000)) : null,
             guessCooldownUntil: (lobby.guessCooldownUntil && lobby.guessCooldownUntil[player.id]) ? lobby.guessCooldownUntil[player.id] : null,
-            guessCooldownStarted: (lobby.guessCooldownStarted && lobby.guessCooldownStarted[player.id]) ? lobby.guessCooldownStarted[player.id] : null
+            guessCooldownStarted: (lobby.guessCooldownStarted && lobby.guessCooldownStarted[player.id]) ? lobby.guessCooldownStarted[player.id] : null,
+            powerupVote: fullState.powerupVote,
+            powerupStage: fullState.powerupStage,
+            activePowerups: fullState.activePowerups || [],
+            snipingImmunityUntil: fullState.snipingImmunityUntil,
+            snipingImmunityGuesserId: fullState.snipingImmunityGuesserId,
+            cityNameLetterCount: fullState.cityNameLetterCount,
+            cityNameRevealedLetters: fullState.cityNameRevealedLetters || [],
+            scanZoneBonusKm: fullState.scanZoneBonusKm || 0,
+            cooldownReductionSeconds: fullState.cooldownReductionSeconds || 0,
+            radarPlacementPlayerId: fullState.radarPlacementPlayerId,
+            radarPlacementRadiusKm: fullState.radarPlacementRadiusKm,
+            radarPlacementEndAt: fullState.radarPlacementEndAt,
+            radarResultPolygon: fullState.radarResultPolygon
         };
 
         socket.emit('game_state_update', sanitizedState);
@@ -340,101 +550,11 @@ async function processGuessQueue(lobbyId) {
             }
             let newPoly = lobby.gameState.validPolygon;
             const guessCount = lobby.gameState.guesses.length;
-            const thresholds = lobby.settings.hintThresholds || [30, 60, 90];
+            const thresholds = lobby.settings.hintThresholds || [20, 40, 60, 80, 100];
+            const gs = lobby.gameState;
+            const countryRevealed = gs.hintLabels && gs.hintLabels.country != null && gs.hintLabels.country !== '';
 
-            if (guessCount === thresholds[0] && !lobby.gameState.hints.hemisphere) {
-                lobby.gameState.hints.hemisphere = true;
-                const isNorth = lobby.gameState.target.lat >= 0;
-                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
-                lobby.gameState.hintLabels.hemisphere = isNorth ? 'Northern' : 'Southern';
-                const badHemisphere = isNorth ? turf.bboxPolygon([-180, -90, 180, 0]) : turf.bboxPolygon([-180, 0, 180, 90]);
-                try {
-                    const diff = turf.difference(turf.featureCollection([newPoly, badHemisphere]));
-                    if (diff) newPoly = diff;
-                } catch (e) { console.error("Hemisphere mask error", e); }
-            }
-
-            if (guessCount === thresholds[1] && !lobby.gameState.hints.continent && lobby.gameState.target.continent) {
-                lobby.gameState.hints.continent = true;
-                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
-                try {
-                    const targetCountryCode = (lobby.gameState.target.countryCode || '').toUpperCase();
-                    if (!targetCountryCode) throw new Error('Missing target country code for continent hint');
-                    if (!REST_COUNTRIES_CACHE) {
-                        const restRes = await fetchWithTimeout('https://restcountries.com/v3.1/all?fields=cca2,continents', {
-                            headers: { 'User-Agent': 'GTC-Game/1.0' },
-                            timeout: 15000
-                        });
-                        if (!restRes.ok) throw new Error(`RESTCountries all error: ${restRes.status}`);
-                        REST_COUNTRIES_CACHE = await restRes.json();
-                    }
-                    const allCountries = REST_COUNTRIES_CACHE;
-                    const targetInfo = allCountries.find(c => c.cca2 && c.cca2.toUpperCase() === targetCountryCode);
-                    let targetContinent = lobby.gameState.target.continent;
-                    if (targetInfo) {
-                        targetContinent = normalizeContinentForCountry(targetCountryCode, targetInfo.continents) || targetContinent;
-                    }
-                    if (!targetContinent) throw new Error('Unable to determine target continent');
-                    lobby.gameState.hintLabels.continent = targetContinent;
-                    const targetContinentLower = targetContinent.toLowerCase();
-                    const sameContinentCodes = allCountries
-                        .map(c => {
-                            const code = c.cca2;
-                            const cont = normalizeContinentForCountry(code, c.continents);
-                            return { code, cont };
-                        })
-                        .filter(entry => entry.code && entry.cont && entry.cont.toLowerCase() === targetContinentLower)
-                        .map(entry => entry.code.toUpperCase());
-                    let continentPoly = null;
-                    for (const code of sameContinentCodes) {
-                        try {
-                            const polyRes = await fetchWithTimeout(
-                                `https://nominatim.openstreetmap.org/search?country=${code}&format=json&polygon_geojson=1&polygon_threshold=0.05&limit=1`,
-                                { headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }, timeout: 15000 }
-                            );
-                            if (!polyRes.ok) continue;
-                            const polyData = await polyRes.json();
-                            if (!polyData?.[0]?.geojson) continue;
-                            let countryFeat = turf.feature(polyData[0].geojson);
-                            countryFeat = optimizeGeometry(countryFeat);
-                            if (!continentPoly) continentPoly = countryFeat;
-                            else {
-                                try { continentPoly = turf.union(continentPoly, countryFeat); } catch (unionErr) { console.warn('Continent union failed for', code, unionErr); }
-                            }
-                        } catch (countryErr) { console.warn('Continent mask country fetch failed for', code, countryErr); }
-                    }
-                    if (continentPoly) {
-                        const intersect = turf.intersect(turf.featureCollection([newPoly, continentPoly]));
-                        if (intersect) newPoly = intersect;
-                    }
-                } catch (e) { console.error("Continent mask error", e); }
-            }
-
-            if (guessCount === thresholds[2] && !lobby.gameState.hints.country) {
-                lobby.gameState.hints.country = true;
-                if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
-                lobby.gameState.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
-                const targetCountryCode = (lobby.gameState.target.countryCode || '').toUpperCase();
-                if (targetCountryCode) {
-                    try {
-                        const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${targetCountryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
-                            headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
-                        });
-                        if (polyRes.ok) {
-                            const polyData = await polyRes.json();
-                            if (polyData?.[0]?.geojson) {
-                                let countryFeat = turf.feature(polyData[0].geojson);
-                                countryFeat = optimizeGeometry(countryFeat);
-                                const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
-                                if (intersect) newPoly = intersect;
-                                else newPoly = countryFeat;
-                            }
-                        }
-                    } catch (e) { console.error("Country reveal error (90 guesses)", e); }
-                }
-            }
-
-            if (isSameCountry && !lobby.gameState.hints.country) {
+            if (isSameCountry && !countryRevealed) {
                 try {
                     const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
                         headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
@@ -447,9 +567,12 @@ async function processGuessQueue(lobbyId) {
                             const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
                             if (intersect) newPoly = intersect;
                             else newPoly = countryFeat;
-                            lobby.gameState.hints.country = true;
-                            if (!lobby.gameState.hintLabels) lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
-                            lobby.gameState.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
+                            if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null };
+                            gs.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
+                            if (gs.activePowerups && gs.activePowerups.includes(POWERUP_IDS.SNIPING_IMMUNITY)) {
+                                gs.snipingImmunityGuesserId = item.socketId;
+                                gs.snipingImmunityUntil = Date.now() + 15000;
+                            }
                         }
                     }
                 } catch (e) { console.error("Country reveal error:", e); }
@@ -471,7 +594,8 @@ async function processGuessQueue(lobbyId) {
                 } catch (e) { console.error("Wrong country mask error:", e); }
             }
 
-            const distThresholds = [250, 100, 50, 20, 10, 5];
+            const baseScanKm = 250 + (gs.scanZoneBonusKm || 0);
+            const distThresholds = [baseScanKm, 100, 50, 20, 10, 5];
             let max_T = 0;
             for (let t of distThresholds) { if (dist > t) { max_T = t; break; } }
             if (max_T > 0) {
@@ -489,6 +613,39 @@ async function processGuessQueue(lobbyId) {
             }
 
             lobby.gameState.validPolygon = optimizeGeometry(newPoly);
+
+            if (guessCount === thresholds[gs.powerupStage]) {
+                if (gs.powerupStage === 4) {
+                    if (!gs.hintLabels) gs.hintLabels = { hemisphere: null, continent: null, country: null };
+                    gs.hintLabels.country = lobby.gameState.target.countryName || (lobby.gameState.target.name && lobby.gameState.target.name.split(',').pop()?.trim()) || '';
+                    const targetCountryCode = (lobby.gameState.target.countryCode || '').toUpperCase();
+                    if (targetCountryCode) {
+                        try {
+                            const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${targetCountryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
+                                headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
+                            });
+                            if (polyRes.ok) {
+                                const polyData = await polyRes.json();
+                                if (polyData?.[0]?.geojson) {
+                                    let countryFeat = turf.feature(polyData[0].geojson);
+                                    countryFeat = optimizeGeometry(countryFeat);
+                                    const intersect = turf.intersect(turf.featureCollection([lobby.gameState.validPolygon, countryFeat]));
+                                    lobby.gameState.validPolygon = intersect ? optimizeGeometry(intersect) : countryFeat;
+                                }
+                            }
+                        } catch (e) { console.error("Country reveal (stage 5) error", e); }
+                    }
+                    gs.powerupStage = 5;
+                } else {
+                    const options = drawTwoFromPool(gs.powerupStage, gs);
+                    if (options.length > 0) {
+                        gs.powerupVote = { options, endAt: Date.now() + 10000, votes: {}, votedBy: {} };
+                        lobby.powerupVoteTimer = setTimeout(() => { finishPowerupVote(lobbyId); }, 10000);
+                    } else {
+                        gs.powerupStage++;
+                    }
+                }
+            }
 
             if (dist <= 100 && !lobby.gameState.hintCities) {
                 console.log(`[submit_guess] Distance <= 100km (${dist.toFixed(2)}km). Fetching hint cities...`);
@@ -528,7 +685,9 @@ async function processGuessQueue(lobbyId) {
             if (lobby.settings.gameMode === 'ffa') {
                 if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                 if (!lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
-                const duration = isSameCountry ? 10000 : 5000;
+                const baseMs = isSameCountry ? 10000 : 5000;
+                const reductionMs = (lobby.gameState.cooldownReductionSeconds || 0) * 1000;
+                const duration = Math.max(0, baseMs - reductionMs);
                 lobby.guessCooldownUntil[item.socketId] = Date.now() + duration;
                 lobby.guessCooldownStarted[item.socketId] = Date.now();
             }
@@ -591,9 +750,11 @@ io.on('connection', (socket) => {
         
         // Merge settings with defaults
         const finalSettings = { ...DEFAULT_SETTINGS, ...settings };
-        // Ensure hintThresholds are numbers
         if (finalSettings.hintThresholds) {
-            finalSettings.hintThresholds = finalSettings.hintThresholds.map(Number);
+            finalSettings.hintThresholds = finalSettings.hintThresholds.slice(0, 5).map(Number);
+            while (finalSettings.hintThresholds.length < 5) {
+                finalSettings.hintThresholds.push([20, 40, 60, 80, 100][finalSettings.hintThresholds.length]);
+            }
         }
         if (finalSettings.minPop) finalSettings.minPop = Number(finalSettings.minPop);
         if (finalSettings.moveTimeLimit) finalSettings.moveTimeLimit = Number(finalSettings.moveTimeLimit);
@@ -869,7 +1030,22 @@ io.on('connection', (socket) => {
     socket.on('submit_guess', ({ lobbyId, query }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby || lobby.gameState.phase !== 'PLAYING') return;
-        if (lobby.gameState.setterId === socket.id) return; // Setter can't guess
+        if (lobby.gameState.setterId === socket.id) return;
+
+        if (lobby.gameState.powerupVote) {
+            socket.emit('error', 'Vote for a powerup first!');
+            return;
+        }
+        if (lobby.gameState.radarPlacementPlayerId === socket.id) {
+            socket.emit('error', 'Place your radar pin first!');
+            return;
+        }
+        if (lobby.gameState.snipingImmunityUntil && Date.now() < lobby.gameState.snipingImmunityUntil) {
+            if (lobby.gameState.snipingImmunityGuesserId !== socket.id) {
+                socket.emit('error', 'Only the player who revealed the country can guess for 15 seconds!');
+                return;
+            }
+        }
 
         if (lobby.settings.gameMode === 'turn_based') {
             if (lobby.turnState.currentGuesserId !== socket.id) {
@@ -882,7 +1058,6 @@ io.on('connection', (socket) => {
         if (!lobby.guessQueue) lobby.guessQueue = [];
         if (lobby.guessQueueProcessing === undefined) lobby.guessQueueProcessing = false;
 
-        // FFA guess cooldown (server-side): block enqueue if still in cooldown (no toast; client shows button state)
         if (lobby.settings.gameMode === 'ffa') {
             if (!lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
             const until = lobby.guessCooldownUntil[socket.id];
@@ -895,6 +1070,43 @@ io.on('connection', (socket) => {
         console.log(`[guess_queue] Lobby ${lobbyId} queued (#${pos} FIFO): socket=${socket.id} nickname=${nickname} query="${query}"`);
 
         processGuessQueue(lobbyId);
+    });
+
+    socket.on('vote_powerup', ({ lobbyId, powerupId }) => {
+        const lobby = lobbies.get(lobbyId);
+        if (!lobby || lobby.gameState.phase !== 'PLAYING' || !lobby.gameState.powerupVote) return;
+        if (lobby.gameState.setterId === socket.id) return;
+        const vote = lobby.gameState.powerupVote;
+        const opt = vote.options.find(o => o.id === powerupId);
+        if (!opt) return;
+        if (vote.votedBy && vote.votedBy[socket.id] !== undefined) return;
+        if (!vote.votes) vote.votes = {};
+        if (!vote.votedBy) vote.votedBy = {};
+        vote.votes[powerupId] = (vote.votes[powerupId] || 0) + 1;
+        vote.votedBy[socket.id] = powerupId;
+        broadcastState(lobbyId);
+    });
+
+    socket.on('place_radar', ({ lobbyId, lat, lon, radiusKm }) => {
+        const lobby = lobbies.get(lobbyId);
+        if (!lobby || lobby.gameState.phase !== 'PLAYING') return;
+        if (lobby.gameState.radarPlacementPlayerId !== socket.id) return;
+        const gs = lobby.gameState;
+        let radius = gs.radarPlacementRadiusKm != null ? gs.radarPlacementRadiusKm : (radiusKm != null ? Math.min(2000, Math.max(50, Number(radiusKm))) : 750);
+        if (gs.radarPlacementRadiusKm == null && (radiusKm == null || isNaN(radius))) radius = 750;
+        (async () => {
+            try {
+                const circle = turf.circle([lon, lat], radius, { units: 'kilometers', steps: 32 });
+                const poly = gs.validPolygon ? turf.intersect(turf.featureCollection([gs.validPolygon, circle])) : circle;
+                if (poly) {
+                    gs.radarResultPolygon = poly;
+                    gs.radarPlacementPlayerId = null;
+                    gs.radarPlacementRadiusKm = null;
+                    gs.radarPlacementEndAt = null;
+                    broadcastState(lobbyId);
+                }
+            } catch (e) { console.error('place_radar error', e); }
+        })();
     });
 
     socket.on('give_up_role', ({ lobbyId, targetUserId }) => {
@@ -932,12 +1144,25 @@ io.on('connection', (socket) => {
             
             // Reset round
             lobby.gameState.phase = 'SETUP_LOC';
-            lobby.gameState.target = { lat: null, lon: null };
+            lobby.gameState.target = { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null };
             lobby.gameState.image = null;
             lobby.gameState.guesses = [];
             lobby.gameState.validPolygon = null;
-            lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
             lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+            lobby.gameState.powerupStage = 0;
+            lobby.gameState.activePowerups = [];
+            lobby.gameState.powerupVote = null;
+            lobby.gameState.snipingImmunityUntil = null;
+            lobby.gameState.snipingImmunityGuesserId = null;
+            lobby.gameState.cityNameLetterCount = null;
+            lobby.gameState.cityNameRevealedLetters = [];
+            lobby.gameState.scanZoneBonusKm = 0;
+            lobby.gameState.cooldownReductionSeconds = 0;
+            lobby.gameState.radarPlacementPlayerId = null;
+            lobby.gameState.radarPlacementRadiusKm = null;
+            lobby.gameState.radarPlacementEndAt = null;
+            lobby.gameState.radarResultPolygon = null;
+            if (lobby.powerupVoteTimer) { clearTimeout(lobby.powerupVoteTimer); lobby.powerupVoteTimer = null; }
             if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
             if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
             if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
@@ -985,16 +1210,17 @@ function handleDisconnect(socket, specificLobbyId = null) {
                 }
 
                 if (wasSetter) {
-                    // Assign new setter
                     lobby.gameState.setterId = lobby.players[0].id;
                     lobby.gameState.phase = 'SETUP_LOC';
-                    // Reset round state
-                    lobby.gameState.target = { lat: null, lon: null };
+                    lobby.gameState.target = { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null };
                     lobby.gameState.image = null;
                     lobby.gameState.guesses = [];
                     lobby.gameState.validPolygon = null;
-                    lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
                     lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                    lobby.gameState.powerupStage = 0;
+                    lobby.gameState.activePowerups = [];
+                    lobby.gameState.powerupVote = null;
+                    if (lobby.powerupVoteTimer) { clearTimeout(lobby.powerupVoteTimer); lobby.powerupVoteTimer = null; }
                     if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
                     if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                     if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
@@ -1027,6 +1253,14 @@ setInterval(() => {
             }
         }
 
+        // 2b. Radar placement timeout
+        if (lobby.gameState.phase === 'PLAYING' && lobby.gameState.radarPlacementEndAt && now > lobby.gameState.radarPlacementEndAt) {
+            lobby.gameState.radarPlacementPlayerId = null;
+            lobby.gameState.radarPlacementRadiusKm = null;
+            lobby.gameState.radarPlacementEndAt = null;
+            broadcastState(lobbyId);
+        }
+
         // 3. Setter Inactivity
         if (lobby.gameState.phase === 'SETUP_LOC' || lobby.gameState.phase === 'SETUP_IMG') {
             const timeSinceSet = now - lobby.setterAssignedAt;
@@ -1052,12 +1286,15 @@ setInterval(() => {
                         const nextSetter = otherPlayers[Math.floor(Math.random() * otherPlayers.length)];
                         lobby.gameState.setterId = nextSetter.id;
                         lobby.gameState.phase = 'SETUP_LOC';
-                        lobby.gameState.target = { lat: null, lon: null };
+                        lobby.gameState.target = { lat: null, lon: null, name: null, countryCode: null, continent: null, countryName: null, placeId: null };
                         lobby.gameState.image = null;
                         lobby.gameState.guesses = [];
                         lobby.gameState.validPolygon = null;
-                        lobby.gameState.hints = { hemisphere: false, continent: false, country: false };
                         lobby.gameState.hintLabels = { hemisphere: null, continent: null, country: null };
+                        lobby.gameState.powerupStage = 0;
+                        lobby.gameState.activePowerups = [];
+                        lobby.gameState.powerupVote = null;
+                        if (lobby.powerupVoteTimer) { clearTimeout(lobby.powerupVoteTimer); lobby.powerupVoteTimer = null; }
                         if (lobby.guessQueue) { lobby.guessQueue = []; lobby.guessQueueProcessing = false; }
                         if (lobby.guessCooldownUntil) lobby.guessCooldownUntil = {};
                         if (lobby.guessCooldownStarted) lobby.guessCooldownStarted = {};
