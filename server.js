@@ -623,7 +623,7 @@ io.on('connection', (socket) => {
                             let contFeat = turf.feature(contData[0].geojson);
                             contFeat = optimizeGeometry(contFeat); // Optimize
 
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, contFeat]));
+                            const intersect = turf.intersect(newPoly, contFeat);
                             if (intersect) newPoly = intersect;
                         }
                     }
@@ -643,7 +643,7 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize
 
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
+                            const intersect = turf.intersect(newPoly, countryFeat);
                             if (intersect) newPoly = intersect;
                         }
                     }
@@ -667,7 +667,7 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
                             
-                            const intersect = turf.intersect(turf.featureCollection([newPoly, countryFeat]));
+                            const intersect = turf.intersect(newPoly, countryFeat);
                             if (intersect) newPoly = intersect;
                             else newPoly = countryFeat;
                             lobby.gameState.hints.country = true;
@@ -686,7 +686,7 @@ io.on('connection', (socket) => {
                             let countryFeat = turf.feature(polyData[0].geojson);
                             countryFeat = optimizeGeometry(countryFeat); // Optimize before operation
 
-                            const diff = turf.difference(turf.featureCollection([newPoly, countryFeat]));
+                            const diff = turf.difference(newPoly, countryFeat);
                             if (diff) newPoly = diff;
                             lobby.gameState.wrongCountries.push(countryCode);
                         }
@@ -701,7 +701,7 @@ io.on('connection', (socket) => {
             
             if (max_T > 0) {
                 const circle = turf.circle([lon, lat], max_T, {units: 'kilometers', steps: 24});
-                const diff = turf.difference(turf.featureCollection([newPoly, circle]));
+                const diff = turf.difference(newPoly, circle);
                 if (diff) newPoly = diff;
             }
 
@@ -711,7 +711,7 @@ io.on('connection', (socket) => {
 
             if (min_T !== Infinity) {
                 const circle = turf.circle([lon, lat], min_T, {units: 'kilometers', steps: 24});
-                const intersect = turf.intersect(turf.featureCollection([newPoly, circle]));
+                const intersect = turf.intersect(newPoly, circle);
                 if (intersect) newPoly = intersect;
             }
 
