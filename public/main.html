@@ -76,15 +76,31 @@
 </head>
 <body class="bg-[#f5f5f0] text-black h-screen w-screen flex flex-col md:flex-row">
 
-    <!-- Version Tag -->
-    <div class="fixed top-2 right-2 z-[9999] text-[10px] font-bold text-gray-400 opacity-50 pointer-events-none">
-        v1.3.0
+    <!-- Version Tag (clickable → patch notes) -->
+    <button type="button" id="version-tag" onclick="togglePatchNotes()" class="fixed bottom-2 left-2 z-[5000] text-xs font-bold text-gray-600 hover:text-black bg-white/90 hover:bg-white border-2 border-black shadow-[2px_2px_0_0_#000] px-2 py-1 cursor-pointer transition-colors" title="Patch notes">
+        v1.4.0
+    </button>
+
+    <!-- Patch Notes Modal -->
+    <div id="patch-notes-modal" class="fixed inset-0 z-[25001] hidden flex items-center justify-center bg-black/80 p-4 opacity-0 transition-opacity duration-300" onclick="togglePatchNotes()">
+        <div class="bg-white p-6 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-2xl w-full max-h-[85vh] flex flex-col" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-4 border-b-4 border-black pb-3 shrink-0">
+                <h2 class="text-2xl font-black">Patch Notes</h2>
+                <button type="button" onclick="togglePatchNotes()" class="neo-btn bg-black text-white p-2 hover:bg-gray-800" aria-label="Close"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+            <div id="patch-notes-content" class="overflow-y-auto flex-1 text-left whitespace-pre-wrap font-sans text-sm text-gray-800 border border-black p-4 bg-[#f5f5f0]">
+                Loading…
+            </div>
+        </div>
     </div>
 
     <!-- Tab Player List Overlay -->
-    <div id="tab-overlay" class="fixed inset-0 z-[30000] bg-black/80 hidden flex items-center justify-center">
-        <div class="bg-white border-4 border-black p-6 min-w-[400px] shadow-[8px_8px_0_0_#fff]">
-            <h2 class="text-2xl font-black mb-4 border-b-4 border-black pb-2">Connected Players</h2>
+    <div id="tab-overlay" class="fixed inset-0 z-[30000] bg-black/80 hidden flex items-center justify-center" onclick="closePlayerList()">
+        <div class="bg-white border-4 border-black p-6 min-w-[400px] shadow-[8px_8px_0_0_#fff] relative" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-4 border-b-4 border-black pb-2">
+                <h2 class="text-2xl font-black">Connected Players</h2>
+                <button type="button" onclick="closePlayerList()" class="neo-btn bg-black text-white p-2 hover:bg-gray-800" aria-label="Close"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
             <div id="tab-player-list" class="flex flex-col gap-2">
                 <!-- Injected via JS -->
             </div>
@@ -343,6 +359,9 @@
         let isProcessing = false;
         let guessQueue = []; // Queue for guesses
         let tempGuessMarker = null; // Visual feedback for click
+        let guessInputDraft = '';
+        let guessInputHadFocus = false;
+        let guessCooldownInterval = null;
 
         let state = {
             phase: GameState.LOBBY,
@@ -358,7 +377,8 @@
             players: [],
             settings: {},
             turnState: { currentGuesserId: null, deadline: null },
-            timeLeft: null
+            timeLeft: null,
+            guessCooldownUntil: null
         };
 
         // --- Map Variables ---
@@ -385,7 +405,7 @@
             });
             document.addEventListener('keyup', (e) => {
                 if (e.key === 'Tab') {
-                    document.getElementById('tab-overlay').classList.add('hidden');
+                    closePlayerList();
                 }
             });
 
@@ -437,6 +457,7 @@
                 if (newState.validPolygon) state.validPolygon = newState.validPolygon;
                 if (newState.turnState) state.turnState = newState.turnState;
                 if (newState.timeLeft !== undefined) state.timeLeft = newState.timeLeft;
+                if (newState.guessCooldownUntil !== undefined) state.guessCooldownUntil = newState.guessCooldownUntil;
                 
                 // Determine my role
                 const me = state.players.find(p => p.id === socket.id);
@@ -445,6 +466,18 @@
                 // Sync Map
                 syncMapState();
                 renderUI();
+                
+                // FFA cooldown: tick UI every second while in cooldown
+                if (guessCooldownInterval) clearInterval(guessCooldownInterval);
+                if (state.phase === GameState.PLAYING && state.settings?.gameMode === 'ffa' && state.guessCooldownUntil && Date.now() < state.guessCooldownUntil) {
+                    guessCooldownInterval = setInterval(() => {
+                        if (state.phase !== GameState.PLAYING || !state.guessCooldownUntil || Date.now() >= state.guessCooldownUntil) {
+                            clearInterval(guessCooldownInterval);
+                            guessCooldownInterval = null;
+                        }
+                        renderUI();
+                    }, 1000);
+                }
                 
                 // Process next guess in queue
                 setTimeout(processQueue, 100);
@@ -508,12 +541,16 @@
             document.getElementById('lobby-overlay').classList.add('hidden');
         }
 
+        function closePlayerList() {
+            document.getElementById('tab-overlay').classList.add('hidden');
+        }
+
         function togglePlayerList() {
             const overlay = document.getElementById('tab-overlay');
             if (overlay.classList.contains('hidden')) {
                 showPlayerList();
             } else {
-                overlay.classList.add('hidden');
+                closePlayerList();
             }
         }
 
@@ -539,6 +576,30 @@
             if (modal.classList.contains('hidden')) {
                 modal.classList.remove('hidden');
                 setTimeout(() => modal.classList.remove('opacity-0'), 10);
+            } else {
+                modal.classList.add('opacity-0');
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
+
+        let patchNotesLoaded = false;
+        async function togglePatchNotes() {
+            const modal = document.getElementById('patch-notes-modal');
+            const content = document.getElementById('patch-notes-content');
+            if (modal.classList.contains('hidden')) {
+                modal.classList.remove('hidden');
+                if (!patchNotesLoaded) {
+                    try {
+                        const res = await fetch('/PATCH_NOTES.md');
+                        const text = await res.text();
+                        content.textContent = text;
+                        patchNotesLoaded = true;
+                    } catch (e) {
+                        content.textContent = 'Could not load patch notes.';
+                    }
+                }
+                setTimeout(() => modal.classList.remove('opacity-0'), 10);
+                lucide.createIcons();
             } else {
                 modal.classList.add('opacity-0');
                 setTimeout(() => modal.classList.add('hidden'), 300);
@@ -923,6 +984,7 @@
             
             guessQueue.push(query);
             input.value = '';
+            guessInputDraft = '';
             processQueue();
         }
 
@@ -1275,6 +1337,11 @@
             // Hide restart button (handled by server state)
             // document.getElementById('btn-restart').classList.add('hidden');
 
+            if (state.phase !== GameState.PLAYING) {
+                guessInputDraft = '';
+                guessInputHadFocus = false;
+            }
+
             // LOBBY Phase
             if (state.phase === GameState.LOBBY) {
                 container.innerHTML = `
@@ -1386,11 +1453,21 @@
                 }
             }
             else if (state.phase === GameState.PLAYING) {
+                const inputEl = document.getElementById('guess-input');
+                if (inputEl) {
+                    guessInputDraft = inputEl.value;
+                    guessInputHadFocus = document.activeElement === inputEl;
+                }
+
                 const gCount = state.guesses.length;
                 const isSetter = myRole === 'setter';
                 const isTurnBased = state.settings?.gameMode === 'turn_based';
                 const isMyTurn = isTurnBased && state.turnState?.currentGuesserId === socket.id;
                 const currentGuesser = state.players.find(p => p.id === state.turnState?.currentGuesserId);
+                const isFFA = state.settings?.gameMode === 'ffa';
+                const cooldownSecondsLeft = (isFFA && state.guessCooldownUntil && Date.now() < state.guessCooldownUntil)
+                    ? Math.max(0, Math.ceil((state.guessCooldownUntil - Date.now()) / 1000)) : 0;
+                const inCooldown = isFFA && cooldownSecondsLeft > 0;
                 
                 container.innerHTML = `
                     <div class="w-full aspect-video overflow-hidden border-4 border-black shadow-[4px_4px_0_0_#000] cursor-pointer relative group shrink-0" onclick="openImageModal('${state.image}')">
@@ -1427,10 +1504,10 @@
                         <form onsubmit="handleGuessSubmit(event)" class="mt-4 flex gap-2 shrink-0 ${isSetter ? 'hidden' : ''}">
                             <div class="relative flex-1">
                                 <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 w-5 h-5"></i>
-                                <input type="text" id="guess-input" placeholder="${isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${isProcessing ? 'disabled' : ''}>
+                                <input type="text" id="guess-input" placeholder="${inCooldown ? `Wait ${cooldownSecondsLeft}s...` : isProcessing ? 'Processing guess...' : 'Type or click map...'}" class="neo-input w-full pl-10 pr-4 py-3 bg-white" autocomplete="off" required ${(isProcessing || inCooldown) ? 'disabled' : ''}>
                             </div>
-                            <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${isProcessing ? 'disabled' : ''}>
-                                ${isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
+                            <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${(isProcessing || inCooldown) ? 'disabled' : ''}>
+                                ${inCooldown ? `Wait ${cooldownSecondsLeft}s` : isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
                             </button>
                         </form>
                     `}
@@ -1503,6 +1580,12 @@
                         ` : ''}
                     </div>
                 `;
+
+                const newInput = document.getElementById('guess-input');
+                if (newInput) {
+                    newInput.value = guessInputDraft;
+                    if (guessInputHadFocus) newInput.focus();
+                }
             }
             else if (state.phase === GameState.WON) {
                 const winner = state.players.find(p => p.id === state.winnerId);

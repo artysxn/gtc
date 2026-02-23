@@ -1,0 +1,10 @@
+---
+description: Changelog — append all code/feature changes to PATCH_NOTES.md; never remove entries
+alwaysApply: true
+---
+
+# Changelog Rule
+
+- **Append changes**: Whenever you make code or feature changes (fixes, new features, refactors, UI changes, etc.), add a short entry to `public/PATCH_NOTES.md` in the current version section. Use a clear, user-facing bullet (e.g. "Guess input is preserved when another player submits a guess").
+- **Never remove**: Do not delete or edit existing patch note entries. The user clears the changelog manually when they commit a release.
+- **Version**: If introducing a notable release (e.g. new version section), add a `## vX.Y.Z` heading and list the changes under it. Otherwise append bullets to the latest version block.
