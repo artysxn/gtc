@@ -3,6 +3,7 @@
 ## v1.6.3
 
 - **Terminology**: "Setter" is now **Hider** and "Guesser(s)" is now **Seeker(s)** throughout the app (roles, UI, scoreboard, patch notes).
+- **Overpass 429**: If the eligible-cities request is rate-limited (429), a clear message is shown and red squares are not cleared. Debounce for pan/zoom is increased and a 10s cooldown avoids repeated requests for the same area.
 
 ## v1.6.2
 
