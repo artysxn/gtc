@@ -81,32 +81,96 @@
 
     <!-- Lobby Overlay -->
     <div id="lobby-overlay" class="fixed inset-0 z-[20000] bg-[#f5f5f0] flex items-center justify-center p-4">
-        <div class="bg-white p-8 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-md w-full text-center">
+        <div class="bg-white p-8 border-4 border-black shadow-[8px_8px_0_0_#000] max-w-2xl w-full text-center flex flex-col h-[80vh]">
             <h1 class="text-4xl font-black mb-6">GTC Multiplayer</h1>
             
-            <div class="mb-6">
-                <label class="block text-left font-bold mb-2">Nickname</label>
-                <input type="text" id="nickname-input" class="neo-input w-full p-3 text-lg" placeholder="Enter name...">
+            <!-- Tabs -->
+            <div class="flex border-b-4 border-black mb-6">
+                <button onclick="switchTab('browse')" id="tab-browse" class="flex-1 py-3 font-bold bg-[#fbbf24] border-r-4 border-black hover:bg-[#f59e0b]">Browse</button>
+                <button onclick="switchTab('create')" id="tab-create" class="flex-1 py-3 font-bold bg-white border-r-4 border-black hover:bg-gray-100">Create</button>
+                <button onclick="switchTab('join')" id="tab-join" class="flex-1 py-3 font-bold bg-white border-r-4 border-black hover:bg-gray-100">Join ID</button>
+                <button onclick="switchTab('leaderboard')" id="tab-leaderboard" class="flex-1 py-3 font-bold bg-white hover:bg-gray-100">Leaderboard</button>
             </div>
 
-            <div class="flex flex-col gap-4">
-                <button onclick="createLobby()" class="neo-btn bg-[#fbbf24] hover:bg-[#f59e0b] text-black font-bold py-4 text-xl">
-                    Create New Lobby
-                </button>
-                
-                <div class="relative flex items-center gap-2">
-                    <div class="h-px bg-black flex-1"></div>
-                    <span class="font-bold text-gray-500">OR</span>
-                    <div class="h-px bg-black flex-1"></div>
+            <!-- Tab Content -->
+            <div id="content-browse" class="flex-1 flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold">Public Lobbies</h2>
+                    <button onclick="refreshLobbies()" class="neo-btn px-3 py-1 bg-white text-sm"><i data-lucide="refresh-cw" class="w-4 h-4"></i></button>
                 </div>
+                <div id="lobbies-list" class="flex-1 overflow-y-auto space-y-2 pr-2">
+                    <!-- Lobbies injected here -->
+                    <p class="text-gray-500 italic">Loading lobbies...</p>
+                </div>
+                <div class="mt-4 border-t-4 border-black pt-4">
+                    <label class="block text-left font-bold mb-2">Your Nickname</label>
+                    <input type="text" id="nickname-input-browse" class="neo-input w-full p-3 text-lg" placeholder="Enter name...">
+                </div>
+            </div>
 
-                <div class="flex gap-2">
-                    <input type="text" id="lobby-id-input" class="neo-input flex-1 p-3" placeholder="Lobby ID">
-                    <button onclick="joinLobby()" class="neo-btn bg-black hover:bg-gray-800 text-white font-bold px-6">
-                        Join
+            <div id="content-create" class="hidden flex-1 flex flex-col overflow-y-auto text-left">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block font-bold mb-1">Nickname</label>
+                        <input type="text" id="nickname-input-create" class="neo-input w-full p-2">
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">Min Population</label>
+                        <select id="setting-minpop" class="neo-input w-full p-2 bg-white">
+                            <option value="1000">1,000+</option>
+                            <option value="5000" selected>5,000+</option>
+                            <option value="20000">20,000+</option>
+                            <option value="100000">100,000+</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">Hint Unlocks (Guesses)</label>
+                        <div class="flex gap-2">
+                            <input type="number" id="setting-hint1" value="30" class="neo-input w-1/3 p-2" placeholder="Hemisphere">
+                            <input type="number" id="setting-hint2" value="60" class="neo-input w-1/3 p-2" placeholder="Continent">
+                            <input type="number" id="setting-hint3" value="90" class="neo-input w-1/3 p-2" placeholder="Country">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">Password (Optional)</label>
+                        <input type="text" id="setting-password" class="neo-input w-full p-2" placeholder="Leave empty for public">
+                    </div>
+                    <button onclick="createLobby()" class="neo-btn w-full py-4 bg-[#22c55e] text-black font-bold text-xl mt-4">
+                        Create Lobby
                     </button>
                 </div>
             </div>
+
+            <div id="content-join" class="hidden flex-1 flex flex-col justify-center">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-left font-bold mb-2">Nickname</label>
+                        <input type="text" id="nickname-input-join" class="neo-input w-full p-3 text-lg">
+                    </div>
+                    <div>
+                        <label class="block text-left font-bold mb-2">Lobby ID</label>
+                        <input type="text" id="lobby-id-input" class="neo-input w-full p-3 text-lg uppercase">
+                    </div>
+                    <div>
+                        <label class="block text-left font-bold mb-2">Password (if required)</label>
+                        <input type="text" id="lobby-pass-input" class="neo-input w-full p-3 text-lg">
+                    </div>
+                    <button onclick="joinLobby()" class="neo-btn w-full py-4 bg-black text-white font-bold text-xl">
+                        Join Lobby
+                    </button>
+                </div>
+            </div>
+
+            <div id="content-leaderboard" class="hidden flex-1 flex flex-col overflow-hidden">
+                <div class="flex gap-2 mb-4">
+                    <button onclick="showLeaderboardTab('wins')" class="neo-btn flex-1 bg-black text-white py-1 text-sm">Most Wins</button>
+                    <button onclick="showLeaderboardTab('rounds')" class="neo-btn flex-1 bg-white py-1 text-sm">Longest Rounds</button>
+                </div>
+                <div id="leaderboard-data" class="flex-1 overflow-y-auto">
+                    <p class="text-gray-500 italic">Loading...</p>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -222,7 +286,9 @@
             lucide.createIcons();
             initMap();
             document.addEventListener('paste', handleGlobalPaste);
-            // renderUI(); // Wait for socket state
+            
+            // Initial Lobby Refresh
+            refreshLobbies();
             
             // Socket Listeners
             socket.on('lobby_created', ({ lobbyId }) => {
@@ -230,6 +296,28 @@
                 document.getElementById('lobby-overlay').classList.add('hidden');
                 document.getElementById('chatbox').classList.remove('hidden'); // Show chat
                 showToast(`Lobby Created: ${lobbyId}`, "info");
+            });
+
+            socket.on('lobbies_list', (list) => {
+                const container = document.getElementById('lobbies-list');
+                if (list.length === 0) {
+                    container.innerHTML = '<p class="text-gray-500 italic">No public lobbies found.</p>';
+                    return;
+                }
+                container.innerHTML = list.map(l => `
+                    <div class="bg-white border-2 border-black p-3 flex justify-between items-center hover:bg-gray-50 cursor-pointer" onclick="fillJoin('${l.id}')">
+                        <div>
+                            <div class="font-bold">Lobby ${l.id}</div>
+                            <div class="text-xs text-gray-600">Host: ${l.host} | Players: ${l.playerCount} | ${l.phase}</div>
+                        </div>
+                        <button class="neo-btn bg-[#22c55e] text-black px-3 py-1 text-sm font-bold">Join</button>
+                    </div>
+                `).join('');
+            });
+
+            socket.on('leaderboard_data', (data) => {
+                window.leaderboardCache = data;
+                renderLeaderboard('wins'); // Default view
             });
 
             socket.on('game_state_update', (newState) => {
@@ -295,22 +383,109 @@
             });
         });
 
+        function switchTab(tab) {
+            ['browse', 'create', 'join', 'leaderboard'].forEach(t => {
+                document.getElementById(`content-${t}`).classList.add('hidden');
+                document.getElementById(`tab-${t}`).classList.remove('bg-[#fbbf24]');
+                document.getElementById(`tab-${t}`).classList.add('bg-white');
+            });
+            document.getElementById(`content-${tab}`).classList.remove('hidden');
+            document.getElementById(`tab-${tab}`).classList.add('bg-[#fbbf24]');
+            document.getElementById(`tab-${tab}`).classList.remove('bg-white');
+            
+            if (tab === 'browse') refreshLobbies();
+            if (tab === 'leaderboard') socket.emit('get_leaderboard');
+        }
+
+        function refreshLobbies() {
+            socket.emit('get_lobbies');
+        }
+
+        function fillJoin(id) {
+            switchTab('join');
+            document.getElementById('lobby-id-input').value = id;
+        }
+
         function createLobby() {
-            const name = document.getElementById('nickname-input').value.trim();
+            const name = document.getElementById('nickname-input-create').value.trim();
             if (!name) return showToast('Enter a nickname', 'error');
+            
+            const settings = {
+                minPop: document.getElementById('setting-minpop').value,
+                hintThresholds: [
+                    document.getElementById('setting-hint1').value,
+                    document.getElementById('setting-hint2').value,
+                    document.getElementById('setting-hint3').value
+                ],
+                password: document.getElementById('setting-password').value.trim() || null
+            };
+
             myNickname = name;
-            socket.emit('create_lobby', { nickname: name });
+            socket.emit('create_lobby', { nickname: name, settings });
         }
 
         function joinLobby() {
-            const name = document.getElementById('nickname-input').value.trim();
+            const name = document.getElementById('nickname-input-join').value.trim() || document.getElementById('nickname-input-browse').value.trim();
             const id = document.getElementById('lobby-id-input').value.trim().toUpperCase();
+            const pass = document.getElementById('lobby-pass-input').value.trim();
+            
             if (!name || !id) return showToast('Enter nickname and Lobby ID', 'error');
+            
             myNickname = name;
             myLobbyId = id;
-            socket.emit('join_lobby', { lobbyId: id, nickname: name });
+            socket.emit('join_lobby', { lobbyId: id, nickname: name, password: pass || null });
             document.getElementById('lobby-overlay').classList.add('hidden');
             document.getElementById('chatbox').classList.remove('hidden'); // Show chat
+        }
+
+        function leaveLobby() {
+            if (confirm("Are you sure you want to leave?")) {
+                socket.emit('leave_lobby', { lobbyId: myLobbyId });
+                window.location.reload();
+            }
+        }
+
+        function renderLeaderboard(type) {
+            const container = document.getElementById('leaderboard-data');
+            const data = window.leaderboardCache;
+            if (!data) return;
+
+            if (type === 'wins') {
+                const sortedWins = Object.entries(data.wins).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                container.innerHTML = `
+                    <table class="w-full text-left border-collapse">
+                        <thead><tr class="border-b-2 border-black"><th class="p-2">Rank</th><th class="p-2">Player</th><th class="p-2">Wins</th></tr></thead>
+                        <tbody>
+                            ${sortedWins.map((([name, wins], i) => `
+                                <tr class="border-b border-gray-300">
+                                    <td class="p-2 font-bold">#${i+1}</td>
+                                    <td class="p-2">${name}</td>
+                                    <td class="p-2 font-bold">${wins}</td>
+                                </tr>
+                            `)).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                container.innerHTML = `
+                    <div class="space-y-4">
+                        ${data.longest_rounds.map((r, i) => `
+                            <div class="border-2 border-black p-2 bg-white">
+                                <div class="flex justify-between font-bold text-sm mb-1">
+                                    <span>#${i+1} - ${r.guesses} Guesses</span>
+                                    <span>Winner: ${r.winner}</span>
+                                </div>
+                                <div class="text-xs text-gray-600 mb-2">${r.target}</div>
+                                <img src="${r.image}" class="w-full h-32 object-cover border border-black">
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+        }
+
+        function showLeaderboardTab(type) {
+            renderLeaderboard(type);
         }
 
         function syncMapState() {
@@ -440,18 +615,24 @@
 
             // Guesser Logic (Click to guess)
             if (myRole === 'guesser' && state.phase === GameState.PLAYING) {
-                // Reverse geocode locally to fill input? Or emit directly?
-                // Plan: Emit submit_guess (reverse geocode first if needed).
-                // Let's stick to filling the input for UX
                 try {
-                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`);
+                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`, {
+                        headers: { 'Accept-Language': 'en' }
+                    });
                     const data = await res.json();
                     if (data && data.address) {
-                        const name = data.address.city || data.address.town || data.name;
-                        const input = document.getElementById('guess-input');
-                        if (input && name) {
-                            input.value = name;
-                            showToast(`Selected: ${name}`, "info");
+                        const addr = data.address;
+                        // Construct "City, Country"
+                        const city = addr.city || addr.town || addr.village || addr.hamlet || data.name;
+                        const country = addr.country;
+                        
+                        if (city && country) {
+                            const fullName = `${city}, ${country}`;
+                            const input = document.getElementById('guess-input');
+                            if (input) {
+                                input.value = fullName;
+                                showToast(`Selected: ${fullName}`, "info");
+                            }
                         }
                     }
                 } catch(e) {}
@@ -601,9 +782,12 @@
                 }
 
                 if (isInside) {
-                    L.circleMarker([city.lat, city.lon], {
-                        radius: 5, color: '#fff', weight: 1.5, fillColor: '#ef4444', fillOpacity: 1
-                    }).bindTooltip(`<b>${city.name}</b><br>Pop: ${city.pop || '>5k'}`, { direction: 'top', className: 'text-center' })
+                    const icon = L.divIcon({
+                        className: 'custom-div-icon',
+                        html: `<div style="background-color: #ef4444; width: 16px; height: 16px; border: 2px solid #000; box-shadow: 2px 2px 0 0 #000;"></div>`,
+                        iconSize: [16, 16], iconAnchor: [8, 8]
+                    });
+                    L.marker([city.lat, city.lon], { icon }).bindTooltip(`<b>${city.name}</b><br>Pop: ${city.pop || '>5k'}`, { direction: 'top', className: 'text-center' })
                     .addTo(hintMarkersLayer);
                 }
             });
@@ -757,9 +941,12 @@
                 }
 
                 if (isInside) {
-                    L.circleMarker([city.lat, city.lon], {
-                        radius: 5, color: '#fff', weight: 1.5, fillColor: '#ef4444', fillOpacity: 1
-                    }).bindTooltip(`<b>${city.name}</b><br>Pop: ${city.pop || '>5k'}`, { direction: 'top', className: 'text-center' })
+                    const icon = L.divIcon({
+                        className: 'custom-div-icon',
+                        html: `<div style="background-color: #ef4444; width: 16px; height: 16px; border: 2px solid #000; box-shadow: 2px 2px 0 0 #000;"></div>`,
+                        iconSize: [16, 16], iconAnchor: [8, 8]
+                    });
+                    L.marker([city.lat, city.lon], { icon }).bindTooltip(`<b>${city.name}</b><br>Pop: ${city.pop || '>5k'}`, { direction: 'top', className: 'text-center' })
                     .addTo(hintMarkersLayer);
                 }
             });
@@ -811,6 +998,13 @@
                 container.innerHTML = `
                     <div class="flex flex-col h-full text-center p-6">
                         <h2 class="text-2xl font-black mb-4">Waiting for players...</h2>
+                        
+                        <!-- Settings Summary -->
+                        <div class="text-xs text-left mb-4 bg-gray-100 p-2 border-2 border-black">
+                            <p><strong>Min Pop:</strong> ${state.settings?.minPop || 5000}</p>
+                            <p><strong>Hints:</strong> ${state.settings?.hintThresholds?.join('/') || '30/60/90'}</p>
+                        </div>
+
                         <div class="bg-[#f5f5f0] border-4 border-black p-4 mb-6">
                             <h3 class="font-bold mb-2 border-b-2 border-black pb-1">Players</h3>
                             <ul class="text-left space-y-2">
@@ -822,11 +1016,13 @@
                                 `).join('')}
                             </ul>
                         </div>
-                        ${myRole === 'setter' || state.players.length > 0 ? `
-                            <button onclick="socket.emit('start_game', { lobbyId: myLobbyId })" class="neo-btn w-full py-4 bg-[#22c55e] text-black font-bold text-xl">
+                        ${state.isHost ? `
+                            <button onclick="socket.emit('start_game', { lobbyId: myLobbyId })" class="neo-btn w-full py-4 bg-[#22c55e] text-black font-bold text-xl mb-2">
                                 Start Game
                             </button>
-                        ` : '<p>Waiting for host to start...</p>'}
+                        ` : '<p class="mb-4 font-bold text-gray-500">Waiting for host to start...</p>'}
+                        
+                        <button onclick="leaveLobby()" class="text-red-600 font-bold hover:underline text-sm">Leave Lobby</button>
                     </div>
                 `;
             }
@@ -932,6 +1128,26 @@
                     ` : ''}
 
                     <div class="mt-4 flex-1 overflow-y-auto flex flex-col gap-4">
+                        <!-- Powerups Progress -->
+                        ${!isSetter ? `
+                            <div class="bg-gray-100 p-2 border-2 border-black text-xs">
+                                <div class="flex justify-between font-bold mb-1">
+                                    <span>Hints Unlock:</span>
+                                    <span>${state.guesses.length} Guesses</span>
+                                </div>
+                                <div class="flex gap-1 h-2">
+                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[0] || 30) ? 'bg-green-500' : ''}"></div>
+                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[1] || 60) ? 'bg-green-500' : ''}"></div>
+                                    <div class="flex-1 bg-white border border-black ${state.guesses.length >= (state.settings?.hintThresholds?.[2] || 90) ? 'bg-green-500' : ''}"></div>
+                                </div>
+                                <div class="flex justify-between text-[10px] mt-1 text-gray-500">
+                                    <span>${state.settings?.hintThresholds?.[0] || 30}</span>
+                                    <span>${state.settings?.hintThresholds?.[1] || 60}</span>
+                                    <span>${state.settings?.hintThresholds?.[2] || 90}</span>
+                                </div>
+                            </div>
+                        ` : ''}
+
                         <div>
                             <h3 class="text-sm font-bold text-black uppercase tracking-wider mb-3">Guesses</h3>
                             ${state.guesses.length === 0 ? `
@@ -944,6 +1160,7 @@
                                         <div class="bg-white p-3 border-4 border-black shadow-[3px_3px_0_0_#000] flex flex-col gap-2 ${i === 0 ? 'bg-[#fbbf24]' : ''}">
                                             <div class="flex justify-between items-start">
                                                 <span class="font-bold text-black line-clamp-1">${g.nickname}: ${g.name}</span>
+                                                <span class="text-[10px] text-gray-500 font-bold">${new Date(g.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                             </div>
                                             ${badges.length > 0 ? `
                                                 <div class="flex flex-wrap gap-1">

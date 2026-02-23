@@ -57,8 +57,34 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'main.html'));
 });
 
+// --- Leaderboard Persistence ---
+const LEADERBOARD_FILE = path.join(__dirname, 'leaderboard.json');
+let leaderboard = { wins: {}, longest_rounds: [] };
+
+function loadLeaderboard() {
+    if (fs.existsSync(LEADERBOARD_FILE)) {
+        try {
+            leaderboard = JSON.parse(fs.readFileSync(LEADERBOARD_FILE, 'utf8'));
+        } catch (e) {
+            console.error("Failed to load leaderboard:", e);
+        }
+    } else {
+        saveLeaderboard();
+    }
+}
+
+function saveLeaderboard() {
+    try {
+        fs.writeFileSync(LEADERBOARD_FILE, JSON.stringify(leaderboard, null, 2));
+    } catch (e) {
+        console.error("Failed to save leaderboard:", e);
+    }
+}
+
+loadLeaderboard();
+
 // --- Game State Storage ---
-// lobbies[lobbyId] = { players: [], gameState: { ... } }
+// lobbies[lobbyId] = { players: [], gameState: { ... }, settings: { ... }, hostId: string, password: string }
 const lobbies = new Map();
 
 const INITIAL_GAME_STATE = {
@@ -71,6 +97,12 @@ const INITIAL_GAME_STATE = {
     hints: { hemisphere: false, continent: false, country: false },
     winnerId: null,
     wrongCountries: [] // Array of country codes
+};
+
+const DEFAULT_SETTINGS = {
+    minPop: 5000,
+    hintThresholds: [30, 60, 90], // Guesses needed for hints
+    password: null
 };
 
 // --- Helper Functions ---
@@ -109,7 +141,9 @@ function broadcastState(lobbyId) {
             target: (isSetter || isWon) ? fullState.target : { lat: null, lon: null, name: null },
             // Players list for UI
             players: lobby.players,
-            myRole: isSetter ? 'setter' : 'guesser'
+            myRole: isSetter ? 'setter' : 'guesser',
+            settings: lobby.settings,
+            isHost: player.id === lobby.hostId
         };
 
         socket.emit('game_state_update', sanitizedState);
@@ -190,11 +224,25 @@ app.post('/upload', upload.single('image'), (req, res) => {
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('create_lobby', ({ nickname }) => {
+    socket.on('create_lobby', ({ nickname, settings }) => {
         const lobbyId = generateLobbyId();
+        
+        // Merge settings with defaults
+        const finalSettings = { ...DEFAULT_SETTINGS, ...settings };
+        // Ensure hintThresholds are numbers
+        if (finalSettings.hintThresholds) {
+            finalSettings.hintThresholds = finalSettings.hintThresholds.map(Number);
+        }
+        if (finalSettings.minPop) {
+            finalSettings.minPop = Number(finalSettings.minPop);
+        }
+
         lobbies.set(lobbyId, {
             players: [{ id: socket.id, nickname, role: 'setter', score: 0 }],
-            gameState: JSON.parse(JSON.stringify(INITIAL_GAME_STATE))
+            gameState: JSON.parse(JSON.stringify(INITIAL_GAME_STATE)),
+            settings: finalSettings,
+            hostId: socket.id,
+            password: finalSettings.password
         });
         
         socket.join(lobbyId);
@@ -207,10 +255,16 @@ io.on('connection', (socket) => {
         broadcastState(lobbyId);
     });
 
-    socket.on('join_lobby', ({ lobbyId, nickname }) => {
+    socket.on('join_lobby', ({ lobbyId, nickname, password }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby) {
             socket.emit('error', 'Lobby not found');
+            return;
+        }
+
+        // Check password
+        if (lobby.password && lobby.password !== password) {
+            socket.emit('error', 'Incorrect password');
             return;
         }
 
@@ -226,9 +280,34 @@ io.on('connection', (socket) => {
         broadcastState(lobbyId);
     });
 
+    socket.on('get_lobbies', () => {
+        const publicLobbies = [];
+        for (const [id, lobby] of lobbies.entries()) {
+            if (!lobby.password) { // Only show public lobbies
+                publicLobbies.push({
+                    id,
+                    host: lobby.players.find(p => p.id === lobby.hostId)?.nickname || 'Unknown',
+                    playerCount: lobby.players.length,
+                    phase: lobby.gameState.phase
+                });
+            }
+        }
+        socket.emit('lobbies_list', publicLobbies);
+    });
+
+    socket.on('leave_lobby', ({ lobbyId }) => {
+        handleDisconnect(socket, lobbyId);
+    });
+
     socket.on('start_game', ({ lobbyId }) => {
         const lobby = lobbies.get(lobbyId);
         if (!lobby) return;
+
+        // Only host can start
+        if (lobby.hostId !== socket.id) {
+            socket.emit('error', 'Only the host can start the game');
+            return;
+        }
 
         // Capture the winner (who is now the setter) BEFORE resetting state
         const nextSetterId = lobby.gameState.setterId;
@@ -307,11 +386,11 @@ io.on('connection', (socket) => {
             
             const validPlace = data.elements.find(n => {
                 const popStr = n.tags?.population?.replace(/,/g, '') || '0';
-                return parseInt(popStr, 10) > 5000;
+                return parseInt(popStr, 10) > (lobby.settings.minPop || 5000);
             });
 
             if (!validPlace) {
-                socket.emit('error', 'Invalid location: Must be a city/town with >5k population.');
+                socket.emit('error', `Invalid location: Must be a city/town with >${(lobby.settings.minPop || 5000)/1000}k population.`);
                 return;
             }
             
@@ -321,7 +400,7 @@ io.on('connection', (socket) => {
 
             // Reverse geocode for name
             const nominatimRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&zoom=10`, {
-                headers: { 'User-Agent': 'GTC-Game/1.0' }
+                headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
             });
             if (!nominatimRes.ok) throw new Error(`Nominatim API error: ${nominatimRes.status}`);
             const geoData = await nominatimRes.json();
@@ -372,7 +451,7 @@ io.on('connection', (socket) => {
         try {
             // Geocode
             const res = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&addressdetails=1&limit=1`, {
-                headers: { 'User-Agent': 'GTC-Game/1.0' }
+                headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
             });
             
             if (!res.ok) {
@@ -392,6 +471,13 @@ io.on('connection', (socket) => {
             const lat = parseFloat(guess.lat);
             const lon = parseFloat(guess.lon);
             const name = guess.display_name.split(',')[0];
+            
+            // Check for duplicates (global)
+            if (lobby.gameState.guesses.some(g => g.name === name)) {
+                socket.emit('error', 'Location already guessed!');
+                return;
+            }
+
             const countryCode = guess.address?.country_code;
 
             console.log(`[submit_guess] User ${socket.id} guessed: ${name} (${lat}, ${lon}). Target: ${lobby.gameState.target.name} (${lobby.gameState.target.lat}, ${lobby.gameState.target.lon})`);
@@ -406,7 +492,8 @@ io.on('connection', (socket) => {
             // Update State
             lobby.gameState.guesses.push({
                 nickname: player.nickname,
-                name, lat, lon, distance: dist, isSameCountry
+                name, lat, lon, distance: dist, isSameCountry,
+                timestamp: Date.now()
             });
             lobby.gameState.guesses.sort((a, b) => a.distance - b.distance);
 
@@ -494,7 +581,7 @@ io.on('connection', (socket) => {
                 try {
                     // Added polygon_threshold=0.01 to reduce initial payload size
                     const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
-                        headers: { 'User-Agent': 'GTC-Game/1.0' }
+                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
                     });
                     if (polyRes.ok) {
                         const polyData = await polyRes.json();
@@ -513,7 +600,7 @@ io.on('connection', (socket) => {
                 // Mask Wrong Country
                  try {
                     const polyRes = await fetchWithTimeout(`https://nominatim.openstreetmap.org/search?country=${countryCode}&format=json&polygon_geojson=1&polygon_threshold=0.01&limit=1`, {
-                        headers: { 'User-Agent': 'GTC-Game/1.0' }
+                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
                     });
                     if (polyRes.ok) {
                         const polyData = await polyRes.json();
@@ -644,33 +731,51 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        // Find lobby player was in
-        for (const [lobbyId, lobby] of lobbies.entries()) {
-            const index = lobby.players.findIndex(p => p.id === socket.id);
-            if (index !== -1) {
-                const wasSetter = lobby.gameState.setterId === socket.id;
-                lobby.players.splice(index, 1);
-                
-                if (lobby.players.length === 0) {
-                    lobbies.delete(lobbyId);
-                } else {
-                    if (wasSetter) {
-                        // Assign new setter
-                        lobby.gameState.setterId = lobby.players[0].id;
-                        lobby.gameState.phase = 'SETUP_LOC';
-                        // Reset round state
-                        lobby.gameState.target = { lat: null, lon: null };
-                        lobby.gameState.image = null;
-                        lobby.gameState.guesses = [];
-                        lobby.gameState.validPolygon = null;
-                    }
-                    broadcastState(lobbyId);
-                }
-                break;
-            }
-        }
+        handleDisconnect(socket);
+    });
+
+    socket.on('get_leaderboard', () => {
+        socket.emit('leaderboard_data', leaderboard);
     });
 });
+
+function handleDisconnect(socket, specificLobbyId = null) {
+    // Find lobby player was in
+    for (const [lobbyId, lobby] of lobbies.entries()) {
+        if (specificLobbyId && lobbyId !== specificLobbyId) continue;
+
+        const index = lobby.players.findIndex(p => p.id === socket.id);
+        if (index !== -1) {
+            const wasSetter = lobby.gameState.setterId === socket.id;
+            const wasHost = lobby.hostId === socket.id;
+            
+            lobby.players.splice(index, 1);
+            socket.leave(lobbyId); // Ensure socket leaves room
+            
+            if (lobby.players.length === 0) {
+                lobbies.delete(lobbyId);
+            } else {
+                // Reassign Host
+                if (wasHost) {
+                    lobby.hostId = lobby.players[0].id;
+                }
+
+                if (wasSetter) {
+                    // Assign new setter
+                    lobby.gameState.setterId = lobby.players[0].id;
+                    lobby.gameState.phase = 'SETUP_LOC';
+                    // Reset round state
+                    lobby.gameState.target = { lat: null, lon: null };
+                    lobby.gameState.image = null;
+                    lobby.gameState.guesses = [];
+                    lobby.gameState.validPolygon = null;
+                }
+                broadcastState(lobbyId);
+            }
+            break;
+        }
+    }
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
