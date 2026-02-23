@@ -216,6 +216,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             lucide.createIcons();
             initMap();
+            document.addEventListener('paste', handleGlobalPaste);
             // renderUI(); // Wait for socket state
             
             // Socket Listeners
@@ -328,6 +329,8 @@
             // Draw Hints
             if (state.hintCities) {
                 updateHintMarkers();
+            } else {
+                hintMarkersLayer.clearLayers();
             }
 
             // Draw Target (if allowed)
