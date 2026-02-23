@@ -92,7 +92,7 @@
 
     <!-- Version Tag (clickable → patch notes) -->
     <button type="button" id="version-tag" onclick="togglePatchNotes()" class="fixed bottom-2 left-2 z-[5000] text-xs font-bold text-gray-600 hover:text-black bg-white/90 hover:bg-white border-2 border-black shadow-[2px_2px_0_0_#000] px-2 py-1 cursor-pointer transition-colors" title="Patch notes">
-        v1.6.1
+        v1.6.2
     </button>
 
     <!-- Patch Notes Modal -->
@@ -234,6 +234,14 @@
                     <div class="flex items-center gap-2">
                         <input type="checkbox" id="setting-hider-victory" class="w-4 h-4" checked>
                         <label for="setting-hider-victory" class="font-bold">Hider victory (setter wins at 1.25× country threshold)</label>
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1">Second image required at</label>
+                        <select id="setting-second-image-stage" class="neo-input w-full p-2 bg-white">
+                            <option value="2">Stage 2</option>
+                            <option value="3" selected>Stage 3</option>
+                            <option value="4">Stage 4</option>
+                        </select>
                     </div>
                     <div>
                         <label class="block font-bold mb-1">Password (Optional)</label>
@@ -795,7 +803,8 @@
                 password: document.getElementById('setting-password').value.trim() || null,
                 gameMode: document.getElementById('setting-gamemode').value,
                 moveTimeLimit: document.getElementById('setting-timelimit').value,
-                hiderVictoryEnabled: document.getElementById('setting-hider-victory').checked
+                hiderVictoryEnabled: document.getElementById('setting-hider-victory').checked,
+                secondImageAtStage: parseInt(document.getElementById('setting-second-image-stage').value, 10) || 3
             };
 
             myNickname = name;
@@ -1026,22 +1035,23 @@
         async function handleMapClick(e) {
             const { lat, lng } = e.latlng;
 
-            // Setter Logic
+            // Setter Logic: same as guesser — reverse geocode to get place name and place_id before confirm
             if (myRole === 'setter' && state.phase === GameState.SETUP_LOC) {
-                console.log("Setter clicked map at:", lat, lng);
-                // Optimistic UI update for marker
                 if (targetMarker) map.removeLayer(targetMarker);
                 targetMarker = L.marker([lat, lng]).addTo(map);
-                
-                // Confirm dialog handled in UI, actual set happens on button click
-                // But for now, let's just store temp selection locally or emit immediately?
-                // The UI has a "Confirm" button. Let's store temp lat/lon in a local var, not state.
-                // Actually, let's just emit immediately for validation?
-                // Plan says: Emit set_target. 
-                // Let's use a temp marker and a confirm button in UI.
-                // We'll store temp selection in a global var `tempTarget`
-                window.tempTarget = { lat, lng };
-                renderUI(); // Re-render to show confirm button
+                window.tempTarget = { lat, lng, placeId: null, displayName: null };
+                renderUI();
+                try {
+                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1&zoom=10`, {
+                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
+                    });
+                    const data = await res.json();
+                    if (data && (data.place_id != null || data.display_name)) {
+                        window.tempTarget.placeId = data.place_id != null ? String(data.place_id) : null;
+                        window.tempTarget.displayName = data.display_name || (data.address && [data.address.city || data.address.town || data.address.village, data.address.country].filter(Boolean).join(', ')) || null;
+                        renderUI();
+                    }
+                } catch (e) {}
                 return;
             }
 
@@ -1065,8 +1075,8 @@
                 tempGuessMarker = L.marker([lat, lng], { icon }).addTo(map);
 
                 try {
-                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`, {
-                        headers: { 'Accept-Language': 'en' }
+                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1&zoom=10`, {
+                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
                     });
                     const data = await res.json();
                     if (data && data.address) {
@@ -1098,23 +1108,23 @@
             renderUI();
 
             try {
-                const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`, {
-                    headers: { 'Accept-Language': 'en' }
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&addressdetails=1&limit=1`, {
+                    headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
                 });
                 const data = await res.json();
                 
                 if (data && data.length > 0) {
                     const lat = parseFloat(data[0].lat);
                     const lon = parseFloat(data[0].lon);
-                    
-                    // Set temp target
-                    window.tempTarget = { lat, lng: lon };
-                    
-                    // Update Map
+                    window.tempTarget = {
+                        lat,
+                        lng: lon,
+                        placeId: data[0].place_id != null ? String(data[0].place_id) : null,
+                        displayName: data[0].display_name || null
+                    };
                     if (targetMarker) map.removeLayer(targetMarker);
                     targetMarker = L.marker([lat, lon]).addTo(map);
                     map.setView([lat, lon], 10);
-                    
                     showToast(`Found: ${data[0].display_name.split(',')[0]}`, "info");
                 } else {
                     showToast("Location not found", "error");
@@ -1131,11 +1141,13 @@
             if (window.tempTarget) {
                 isProcessing = true;
                 renderUI();
-                console.log("Confirming target location:", window.tempTarget);
-                socket.emit('set_target', { lobbyId: myLobbyId, lat: window.tempTarget.lat, lon: window.tempTarget.lng });
+                socket.emit('set_target', {
+                    lobbyId: myLobbyId,
+                    lat: window.tempTarget.lat,
+                    lon: window.tempTarget.lng,
+                    placeId: window.tempTarget.placeId || undefined
+                });
                 window.tempTarget = null;
-            } else {
-                console.warn("Attempted to confirm target but no tempTarget found.");
             }
         }
 
@@ -1159,7 +1171,28 @@
             lastGuessEmittedAt = Date.now();
             renderUI(); // Show loading state
             
+            const timeoutId = setTimeout(() => {
+                if (!isProcessing) return;
+                isProcessing = false;
+                lastGuessEmittedAt = null;
+                renderUI();
+                showToast('Guess is taking longer than usual (queue or server). You can guess again.', 'info');
+                processQueue();
+            }, 3000);
+            setTimeout(() => { if (isProcessing) renderUI(); }, 2000); // Re-render so "Stop waiting" can appear after 2s
+            const onUpdate = () => { clearTimeout(timeoutId); };
+            socket.once('game_state_update', onUpdate);
+            socket.once('error', onUpdate);
+            
             socket.emit('submit_guess', { lobbyId: myLobbyId, query });
+        }
+
+        function forceStopGuess() {
+            if (!isProcessing) return;
+            isProcessing = false;
+            lastGuessEmittedAt = null;
+            renderUI();
+            processQueue();
         }
 
         function processGuess(name, lat, lon, countryCode) {
@@ -1669,12 +1702,13 @@
                                         <i data-lucide="check" class="w-8 h-8"></i>
                                     </div>
                                     <h3 class="text-xl font-bold text-black mb-2">Location Selected</h3>
+                                    ${window.tempTarget.displayName ? `<p class="text-sm text-gray-700 mb-3 font-medium break-words">${window.tempTarget.displayName}</p>` : ''}
                                     <button onclick="confirmTargetLocation()" class="neo-btn w-full py-3 px-4 bg-[#22c55e] hover:bg-[#16a34a] text-black font-bold transition-all flex items-center justify-center gap-2" ${isProcessing ? 'disabled' : ''}>
                                         ${isProcessing ? '<div class="loader border-black border-t-transparent"></div>' : 'Confirm Selection <i data-lucide="arrow-right" class="w-4 h-4"></i>'}
                                     </button>
                                 ` : `
                                     <i data-lucide="map" class="w-12 h-12 text-gray-500 mb-4"></i>
-                                    <p class="text-gray-600 font-medium mb-4">Click map OR search below...</p>
+                                    <p class="text-gray-600 font-medium mb-4">Click map OR type to search (same as seekers)...</p>
                                     <form onsubmit="handleSetterSearch(event)" class="w-full flex gap-2">
                                         <input type="text" id="setter-search-input" class="neo-input flex-1 p-2 text-sm" placeholder="Type city (e.g. Paris, France)...">
                                         <button type="submit" class="neo-btn bg-black text-white px-3 font-bold"><i data-lucide="search" class="w-4 h-4"></i></button>
@@ -1824,6 +1858,9 @@
                                 <button type="submit" id="guess-btn" class="neo-btn bg-black hover:bg-gray-800 text-white px-6 py-3 font-bold transition-all flex items-center justify-center min-w-[100px]" ${(isProcessing || mustPlaceRadar || mustVote || snipingBlock) ? 'disabled' : ''}>
                                     ${mustPlaceRadar ? 'Place radar' : mustVote ? 'Vote first' : isProcessing ? '<div class="loader border-white border-t-transparent"></div>' : 'Guess'}
                                 </button>
+                                ${(isProcessing && lastGuessEmittedAt && (Date.now() - lastGuessEmittedAt >= 2000)) ? `
+                                <button type="button" onclick="forceStopGuess()" class="neo-btn bg-red-600 hover:bg-red-700 text-white px-4 py-3 font-bold text-sm whitespace-nowrap">Stop waiting</button>
+                                ` : ''}
                             `}
                         </form>
                     `}

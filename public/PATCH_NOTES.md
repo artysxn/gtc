@@ -1,9 +1,17 @@
 # Patch Notes
 
+## v1.6.2
+
+- **Stop waiting button**: As a seeker, if your guess has been loading for 2 seconds or more, a **Stop waiting** button appears so you can cancel the loading state and guess again (the previous guess may still complete on the server).
+
 ## v1.6.1
 
 - **Hint thresholds from lobby**: In-game stage bar and labels (P1 @5, Country @30, etc.) now always use the lobby’s configured hint thresholds from settings; no more wrong defaults (e.g. 20–40–60–80). Settings are merged from the server on every game state update.
 - **Hider victory default**: Hider victory is now **on by default** when creating a lobby (checkbox checked).
+- **Guess “Loading” fix**: Server now broadcasts state after “not found” or “duplicate” so the client clears the loading state. Client has a 3s safety timeout and clears loading + shows a toast if a guess isn’t processed in time.
+- **Setter place name before confirm**: When setting a location, the setter sees the **resolved place name** (from Nominatim) before confirming. Same click + type-to-search flow as seekers; the chosen place’s **place_id** is sent so wins match the same OSM place when a seeker guesses it.
+- **Second image at stage**: Lobby setting “Second image required at” lets you choose **Stage 2**, **Stage 3**, or **Stage 4** (default Stage 3). The hider must upload the second image when guess count reaches that stage’s threshold.
+- **Guess logging**: Server logs every guess when **received** (RECEIVED), and again when **processed** (PROCESSED with outcome). If a guess is not processed within 3 seconds, the server logs why (queue backlog or Nominatim/API delay).
 
 ## v1.6.0
 

@@ -125,7 +125,8 @@ const DEFAULT_SETTINGS = {
     password: null,
     gameMode: 'ffa', // 'ffa' or 'turn_based'
     moveTimeLimit: 0, // Seconds, 0 = off
-    hiderVictoryEnabled: true // If true, setter wins when guess count reaches 1.25× country threshold
+    hiderVictoryEnabled: true, // If true, setter wins when guess count reaches 1.25× country threshold
+    secondImageAtStage: 3 // 2, 3, or 4 — require second image when guess count reaches this stage's threshold
 };
 
 // Powerup IDs (used for conditionals and activePowerups)
@@ -537,7 +538,9 @@ async function processGuessQueue(lobbyId) {
                 if (playerSocket) playerSocket.emit('error', 'Location not found');
                 logSlowGuess(lobbyId, item, 'Nominatim returned no results for query.');
                 lobby.guessQueue.shift();
+                console.log(`[guess_queue] PROCESSED (not found): socket=${item.socketId} query="${item.query}"`);
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (user error: not found). Queue length now ${lobby.guessQueue.length}`);
+                broadcastState(lobbyId);
                 done = true;
                 break;
             }
@@ -550,12 +553,15 @@ async function processGuessQueue(lobbyId) {
                 if (playerSocket) playerSocket.emit('error', 'Location already guessed!');
                 logSlowGuess(lobbyId, item, 'Nominatim responded; duplicate guess.');
                 lobby.guessQueue.shift();
+                console.log(`[guess_queue] PROCESSED (duplicate): socket=${item.socketId} query="${item.query}"`);
                 console.log(`[guess_queue] Lobby ${lobbyId} dequeued (user error: duplicate). Queue length now ${lobby.guessQueue.length}`);
+                broadcastState(lobbyId);
                 done = true;
                 break;
             }
 
             const countryCode = guess.address?.country_code;
+            console.log(`[guess_queue] PROCESSED (accepted): socket=${item.socketId} query="${item.query}" -> ${name} (${lat}, ${lon})`);
             console.log(`[submit_guess] User ${item.socketId} guessed: ${name} (${lat}, ${lon}). Target: ${lobby.gameState.target.name} (${lobby.gameState.target.lat}, ${lobby.gameState.target.lon})`);
             const dist = calculateHaversineDistance(lat, lon, lobby.gameState.target.lat, lobby.gameState.target.lon);
             const isSameCountry = (countryCode === lobby.gameState.target.countryCode);
@@ -579,6 +585,7 @@ async function processGuessQueue(lobbyId) {
             const targetPlaceId = lobby.gameState.target.placeId;
             const isExactMatch = (targetPlaceId != null && guess.place_id != null && String(guess.place_id) === String(targetPlaceId));
             if (isExactMatch) {
+                console.log(`[guess_queue] PROCESSED (win): socket=${item.socketId} query="${item.query}" place_id=${guess.place_id}`);
                 console.log(`[submit_guess] WIN! Exact place match (place_id ${guess.place_id})`);
                 lobby.gameState.phase = 'WON';
                 lobby.gameState.winnerId = item.socketId;
@@ -603,6 +610,7 @@ async function processGuessQueue(lobbyId) {
             const guessCount = lobby.gameState.guesses.length;
             const hiderWinThreshold = Math.round(1.25 * countryThreshold);
             if (lobby.settings.hiderVictoryEnabled && guessCount >= hiderWinThreshold) {
+                console.log(`[guess_queue] PROCESSED (hider win): socket=${item.socketId} guessCount=${guessCount}`);
                 console.log(`[submit_guess] HIDER WINS! Survived ${guessCount} guesses (threshold ${hiderWinThreshold})`);
                 lobby.gameState.phase = 'HIDER_WON';
                 lobby.gameState.winnerId = lobby.gameState.setterId; // setter won
@@ -613,8 +621,9 @@ async function processGuessQueue(lobbyId) {
                 break;
             }
 
-            // Second image required at 50% of hider victory threshold (default rule, not a powerup)
-            const secondImageRequirementAt = Math.round(0.5 * hiderWinThreshold);
+            // Second image required at lobby-configured stage (2, 3, or 4)
+            const secondImageStage = Math.min(4, Math.max(2, Number(lobby.settings.secondImageAtStage) || 3));
+            const secondImageRequirementAt = thresholds[secondImageStage - 1] != null ? Number(thresholds[secondImageStage - 1]) : Math.round(0.5 * hiderWinThreshold);
             if (!lobby.gameState.secondImageUploadBy && !lobby.gameState.secondImageUrl && guessCount >= secondImageRequirementAt) {
                 lobby.gameState.secondImageUploadBy = Date.now() + 60000;
                 lobby.gameState.secondImageWarningShown = false;
@@ -854,6 +863,9 @@ io.on('connection', (socket) => {
         }
         if (finalSettings.minPop) finalSettings.minPop = Number(finalSettings.minPop);
         if (finalSettings.moveTimeLimit) finalSettings.moveTimeLimit = Number(finalSettings.moveTimeLimit);
+        const siStage = Number(finalSettings.secondImageAtStage);
+        if ([2, 3, 4].includes(siStage)) finalSettings.secondImageAtStage = siStage;
+        else finalSettings.secondImageAtStage = 3;
 
         lobbies.set(lobbyId, {
             players: [{ id: socket.id, nickname, role: 'setter', score: 0, winsAsSetter: 0, winsAsGuesser: 0, totalGuesses: 0, roundsPlayed: 0 }],
@@ -980,7 +992,7 @@ io.on('connection', (socket) => {
         io.to(lobbyId).emit('chat_message', chatMsg);
     });
 
-    socket.on('set_target', async ({ lobbyId, lat, lon }) => {
+    socket.on('set_target', async ({ lobbyId, lat, lon, placeId: clientPlaceId }) => {
         const lobby = lobbies.get(lobbyId);
         
         // Detailed error logging for debugging
@@ -1094,7 +1106,7 @@ io.on('connection', (socket) => {
                 name: fullName, 
                 countryCode,
                 countryName: country || '',
-                placeId: geoData.place_id || null
+                placeId: (clientPlaceId != null && clientPlaceId !== '') ? String(clientPlaceId) : (geoData.place_id || null)
             };
 
             // Fetch continent
@@ -1160,10 +1172,25 @@ io.on('connection', (socket) => {
             if (until && Date.now() < until) return;
         }
 
-        lobby.guessQueue.push({ socketId: socket.id, query, enqueuedAt: Date.now() });
-        const pos = lobby.guessQueue.length;
         const nickname = (lobby.players.find(p => p.id === socket.id) || {}).nickname || socket.id;
-        console.log(`[guess_queue] Lobby ${lobbyId} queued (#${pos} FIFO): socket=${socket.id} nickname=${nickname} query="${query}"`);
+        const enqueuedAt = Date.now();
+        lobby.guessQueue.push({ socketId: socket.id, query, enqueuedAt });
+        const pos = lobby.guessQueue.length;
+        console.log(`[guess_queue] RECEIVED: socket=${socket.id} nickname=${nickname} query="${query}" (queue position #${pos})`);
+
+        setTimeout(() => {
+            const still = lobby.guessQueue.find(entry => entry.enqueuedAt === enqueuedAt);
+            if (!still) return; // already processed
+            const idx = lobby.guessQueue.indexOf(still);
+            if (idx < 0) return;
+            const waited = Math.round((Date.now() - enqueuedAt) / 1000);
+            const reason = idx === 0 && lobby.guessQueueProcessing
+                ? 'Nominatim/API or server processing delay (first in queue, still processing)'
+                : idx > 0
+                    ? `Queue backlog (${idx} guess(es) ahead)`
+                    : 'Unknown';
+            console.log(`[guess_queue] NOT PROCESSED after ${waited}s: socket=${socket.id} query="${query}" — ${reason}`);
+        }, 3000);
 
         processGuessQueue(lobbyId);
     });
