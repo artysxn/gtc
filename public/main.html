@@ -994,25 +994,15 @@
 
             map.on('click', handleMapClick);
             map.on('zoomend', updateHintMarkers);
-            let hiderEligibleDebounce = null;
-            map.on('moveend', () => {
-                if (myRole !== 'hider' || state.phase !== GameState.SETUP_LOC || map.getZoom() < 10) return;
-                if (hiderEligibleDebounce) clearTimeout(hiderEligibleDebounce);
-                hiderEligibleDebounce = setTimeout(() => {
-                    hiderEligibleDebounce = null;
-                    const c = map.getCenter();
-                    fetchHiderEligibleCities(c.lat, c.lng);
-                }, 1500);
-            });
-
             const resizeObserver = new ResizeObserver(() => map.invalidateSize());
             resizeObserver.observe(document.getElementById('map'));
         }
 
-        // --- Overpass API (Population Check) ---
+        // --- Overpass API (one request: closest eligible city near a point) ---
         async function getEligibleCityNearby(lat, lon) {
+            const minPop = (state.settings && state.settings.minPop) ? state.settings.minPop : 5000;
             const query = `
-                [out:json];
+                [out:json][timeout:15];
                 (
                   node["place"~"city|town"](around:20000,${lat},${lon});
                   way["place"~"city|town"](around:20000,${lat},${lon});
@@ -1020,27 +1010,37 @@
                 );
                 out center tags;
             `;
-            
-            const res = await fetch("https://overpass-api.de/api/interpreter", {
-                method: "POST", body: query
+            async function tryOverpass(baseUrl) {
+                const res = await fetch(baseUrl, { method: "POST", body: query });
+                if (res.status === 429 || res.status === 504) return { status: res.status };
+                const data = await res.json();
+                return { status: res.status, data };
+            }
+            let result = await tryOverpass("https://overpass-api.de/api/interpreter");
+            if (result.status === 429 || result.status === 504) {
+                if (typeof showToast === 'function') showToast(result.status === 504 ? 'Request timed out. Retrying…' : 'Too many requests. Retrying…', 'info');
+                await new Promise(r => setTimeout(r, 2000));
+                result = await tryOverpass("https://overpass.kumi.systems/api/interpreter");
+            }
+            if (result.status === 429) {
+                if (typeof showToast === 'function') showToast('Too many requests. Wait a moment and try again.', 'error');
+                return null;
+            }
+            if (result.status === 504 || !result.data || !result.data.elements) {
+                if (result.status === 504 && typeof showToast === 'function') showToast('Request timed out. Try again in a moment.', 'error');
+                return null;
+            }
+            const validPlaces = (result.data.elements || []).filter(n => {
+                const popStr = (n.tags && n.tags.population) ? String(n.tags.population).replace(/,/g, '') : '0';
+                return parseInt(popStr, 10) >= minPop;
             });
-            const data = await res.json();
-            
-            const validPlaces = data.elements.filter(n => {
-                const popStr = n.tags?.population?.replace(/,/g, '') || '0';
-                return parseInt(popStr, 10) > 5000;
-            });
-
             if (validPlaces.length === 0) return null;
-
             let closest = null;
             let minDist = Infinity;
-            
             for (const place of validPlaces) {
-                const pLat = place.lat || place.center?.lat;
-                const pLon = place.lon || place.center?.lon;
-                if (!pLat || !pLon) continue;
-                
+                const pLat = place.lat || (place.center && place.center.lat);
+                const pLon = place.lon || (place.center && place.center.lon);
+                if (pLat == null || pLon == null) continue;
                 const dist = calculateHaversineDistance(lat, lon, pLat, pLon);
                 if (dist < minDist) {
                     minDist = dist;
@@ -1050,79 +1050,44 @@
             return closest;
         }
 
-        let lastHiderEligibleFetch = { at: 0, lat: 0, lon: 0 };
-        const HIDER_ELIGIBLE_COOLDOWN_MS = 10000; // Avoid 429 from Overpass
-        async function fetchHiderEligibleCities(centerLat, centerLon) {
-            const now = Date.now();
-            const distKm = lastHiderEligibleFetch.at && (typeof calculateHaversineDistance === 'function')
-                ? calculateHaversineDistance(centerLat, centerLon, lastHiderEligibleFetch.lat, lastHiderEligibleFetch.lon) : 999;
-            if (lastHiderEligibleFetch.at && (now - lastHiderEligibleFetch.at < HIDER_ELIGIBLE_COOLDOWN_MS) && distKm < 8) {
-                return; // Skip: same area recently fetched
-            }
-            const minPop = (state.settings && state.settings.minPop) ? state.settings.minPop : 5000;
-            const query = `
-                [out:json][timeout:15];
-                (
-                  node["place"~"city|town"](around:20000,${centerLat},${centerLon});
-                  way["place"~"city|town"](around:20000,${centerLat},${centerLon});
-                  relation["place"~"city|town"](around:20000,${centerLat},${centerLon});
-                );
-                out center tags;
-            `;
-            try {
-                const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", body: query });
-                if (res.status === 429) {
-                    showToast('Too many requests. Wait a moment and try again.', 'error');
-                    return;
-                }
-                const data = await res.json();
-                lastHiderEligibleFetch = { at: Date.now(), lat: centerLat, lon: centerLon };
-                hiderEligibleLayer.clearLayers();
-                const validPlaces = (data.elements || []).filter(n => {
-                    const popStr = (n.tags && n.tags.population) ? String(n.tags.population).replace(/,/g, '') : '0';
-                    return parseInt(popStr, 10) >= minPop;
-                });
-                for (const place of validPlaces) {
-                    const pLat = place.lat || (place.center && place.center.lat);
-                    const pLon = place.lon || (place.center && place.center.lon);
-                    if (pLat == null || pLon == null) continue;
-                    const name = (place.tags && (place.tags.name || place.tags['name:en'])) || 'City';
-                    const icon = L.divIcon({
-                        className: 'custom-div-icon',
-                        html: '<div style="background-color:#ef4444;width:16px;height:16px;border:2px solid #000;box-shadow:2px 2px 0 0 #000;cursor:pointer;"></div>',
-                        iconSize: [16, 16], iconAnchor: [8, 8]
-                    });
-                    const mrk = L.marker([pLat, pLon], { icon }).addTo(hiderEligibleLayer);
-                    mrk.on('click', async () => {
-                        if (targetMarker) map.removeLayer(targetMarker);
-                        targetMarker = L.marker([pLat, pLon]).addTo(map);
-                        window.tempTarget = { lat: pLat, lng: pLon, placeId: null, displayName: name };
-                        renderUI();
-                        try {
-                            const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${pLat}&lon=${pLon}&format=json&addressdetails=1&zoom=10`, {
-                                headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
-                            });
-                            const revData = await rev.json();
-                            if (revData && (revData.place_id != null || revData.display_name)) {
-                                window.tempTarget.placeId = revData.place_id != null ? String(revData.place_id) : null;
-                                window.tempTarget.displayName = revData.display_name || (revData.address && [revData.address.city || revData.address.town || revData.address.village, revData.address.country].filter(Boolean).join(', ')) || name;
-                                renderUI();
-                            }
-                        } catch (e) {}
-                    });
-                }
-            } catch (e) {
-                showToast('Could not load eligible cities', 'error');
-            }
-        }
-
         // --- Core Logic ---
         async function handleMapClick(e) {
             const { lat, lng } = e.latlng;
 
-            // Setter: target is set only by clicking a red square (see fetchHiderEligibleCities)
+            // Hider: click places marker, one Overpass request finds closest eligible city → one red square
             if (myRole === 'hider' && state.phase === GameState.SETUP_LOC) {
-                showToast('Click a red square to select a city', 'info');
+                showToast('Finding nearest eligible city…', 'info');
+                const closest = await getEligibleCityNearby(lat, lng);
+                if (!closest) {
+                    showToast('No eligible city nearby (within 20 km). Try another spot.', 'error');
+                    return;
+                }
+                const pLat = closest.lat;
+                const pLon = closest.lon;
+                const name = (closest.tags && (closest.tags.name || closest.tags['name:en'])) || 'City';
+                hiderEligibleLayer.clearLayers();
+                const icon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: '<div style="background-color:#ef4444;width:16px;height:16px;border:2px solid #000;box-shadow:2px 2px 0 0 #000;"></div>',
+                    iconSize: [16, 16], iconAnchor: [8, 8]
+                });
+                L.marker([pLat, pLon], { icon }).addTo(hiderEligibleLayer);
+                if (targetMarker) map.removeLayer(targetMarker);
+                targetMarker = L.marker([pLat, pLon]).addTo(map);
+                window.tempTarget = { lat: pLat, lng: pLon, placeId: null, displayName: name };
+                renderUI();
+                try {
+                    const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${pLat}&lon=${pLon}&format=json&addressdetails=1&zoom=10`, {
+                        headers: { 'User-Agent': 'GTC-Game/1.0', 'Accept-Language': 'en' }
+                    });
+                    const revData = await rev.json();
+                    if (revData && (revData.place_id != null || revData.display_name)) {
+                        window.tempTarget.placeId = revData.place_id != null ? String(revData.place_id) : null;
+                        window.tempTarget.displayName = revData.display_name || (revData.address && [revData.address.city || revData.address.town || revData.address.village, revData.address.country].filter(Boolean).join(', ')) || name;
+                        renderUI();
+                    }
+                } catch (e) {}
+                showToast('Location set. Confirm or click elsewhere to change.', 'info');
                 return;
             }
 
@@ -1189,9 +1154,9 @@
                     const lon = parseFloat(data[0].lon);
                     if (targetMarker) { map.removeLayer(targetMarker); targetMarker = null; }
                     window.tempTarget = null;
+                    hiderEligibleLayer.clearLayers();
                     map.setView([lat, lon], 10);
-                    await fetchHiderEligibleCities(lat, lon);
-                    showToast('Click a red square to lock in your location', 'info');
+                    showToast('Click on the map to set the nearest eligible city', 'info');
                 } else {
                     showToast("Location not found", "error");
                 }

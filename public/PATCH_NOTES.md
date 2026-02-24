@@ -3,7 +3,8 @@
 ## v1.6.3
 
 - **Terminology**: "Setter" is now **Hider** and "Guesser(s)" is now **Seeker(s)** throughout the app (roles, UI, scoreboard, patch notes).
-- **Overpass 429**: If the eligible-cities request is rate-limited (429), a clear message is shown and red squares are not cleared. Debounce for pan/zoom is increased and a 10s cooldown avoids repeated requests for the same area.
+- **Overpass 429/504**: If the eligible-cities request is rate-limited (429) or times out (504), the app shows a message and automatically retries once after 2s using a fallback Overpass server. If it still fails, a clear message is shown and existing red squares are kept. Debounce and cooldown reduce request volume.
+- **Hider: one request per click**: The hider can place a marker by clicking anywhere on the map. One Overpass request finds the **closest** eligible city (within 20 km); one red square is shown at that city and the target is set there. Search only zooms the map; no bulk city loading. This reduces Overpass usage to a single request per placement.
 
 ## v1.6.2
 
